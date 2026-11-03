@@ -1,0 +1,12 @@
+node_modules/
+lib/
+.artifacts/
+.env
+coverage/
+dist/
+.env.*
+!.env.example
+.pi-superagent/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

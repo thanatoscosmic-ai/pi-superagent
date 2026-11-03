@@ -1,0 +1,13 @@
+{
+  "policy": {
+    "rules": [{
+      "id": "requested",
+      "name": "明确要求的编码工作",
+      "enabled": true,
+      "instruction": "仅执行允许名单成员明确请求、目标与范围已经确定的编码工作；修复指定缺陷并验证测试，不自行决定产品设计。PR 作为交付，禁止自动合并。"
+    }],
+    "sources": {}
+  },
+  "eval": { "mode": "observe" },
+  "executor": { "maxWorkers": 3 }
+}
