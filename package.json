@@ -5,8 +5,8 @@
     "DeepSeek Harness Team"
   ],
   "license": "MIT",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/thanatoscosmic-ai/pi-superagent.git" },
   "description": "以 pi 最简 Agent 执行内核运行 dsh-superagent 领域设计的独立编码 agent。",
   "type": "module",
   "main": "dist/index.js",
@@ -24,6 +24,10 @@
   },
   "files": [
     "dist",
+    "src",
+    "pi.tsdown.config.ts",
+    "tsconfig.json",
+    "examples/pi-settings.json",
     "lib",
     "cordis.patch.yml",
     "locale/*.json",
@@ -53,6 +57,8 @@
   },
   "scripts": {
     "build": "tsdown --config pi.tsdown.config.ts",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
     "build:dsh": "tsdown",
     "start": "node dist/cli.js",
     "dev": "tsx src/pi/cli.ts",
@@ -62,8 +68,7 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "engines": {
-    "node": "^22.19.0 || >=24.0.0",
-    "dsh": "^0.2.1-alpha.2"
+    "node": ">=24.0.0"
   },
   "packageManager": "pnpm@11.7.0",
   "dependencies": {
@@ -72,31 +77,6 @@
     "@earendil-works/pi-schema": "1.5.0",
     "proper-lockfile": "4.1.2",
     "zod": "4.4.3"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.5-alpha.1",
-    "@deepseek-ai/dsh-agent": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-api-session-controller": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-attachment": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-locale": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-layout": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-sidebar": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-client-ui-workspace": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-host-webserver": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-llm": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-permission-presets": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-scope": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-session": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-session-persistence": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-skill": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-subprocess": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-system-prompt": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-tools": "^0.2.1-alpha.2",
-    "@deepseek-ai/dsh-workspace": "^0.2.1-alpha.2",
-    "@deepseek-ai/schemastery": "3.18.5-alpha.1"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",

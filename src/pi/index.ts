@@ -1,3 +1,4 @@
+export { runCoding } from './coding.ts'
 export { PiRuntime } from './runtime.ts'
 export { PiExecutor } from './executor.ts'
 export { createPiAgent } from './model.ts'

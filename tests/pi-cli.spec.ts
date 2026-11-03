@@ -16,6 +16,14 @@ describe('pi CLI', () => {
     expect(result.stdout).toContain('pi-superagent run')
     expect(result.stdout).toContain('OPENAI_BASE_URL')
   })
+  it('版本命令无需模型配置', async () => {
+    const result = await exec(process.execPath, ['--import', 'tsx', cli, '--version'])
+    expect(result.stdout.trim()).toBe('pi-superagent 0.2.0')
+  })
+  it('默认 coding 模式缺少凭据时提供明确提示', async () => {
+    await expect(exec(process.execPath, ['--import', 'tsx', cli, '-p', '解释项目'],
+      { env: { ...process.env, OPENAI_API_KEY: '' } })).rejects.toMatchObject({ code: 1, stderr: expect.stringContaining('OPENAI_API_KEY') })
+  })
   it('显式配置禁用本地操作者时不能自动重写授权', async () => {
     const root = mkdtempSync(join(tmpdir(), 'pi-cli-'))
     const config = join(root, 'settings.json')

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { runCoding } from './coding.ts'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { PiRuntime } from './runtime.ts'
@@ -15,16 +18,32 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   allowed: { type: 'string' },
   port: { type: 'string', default: '8787' },
   'allow-shell': { type: 'boolean', default: false },
+  print: { type: 'boolean', short: 'p', default: false },
+  continue: { type: 'boolean', short: 'c', default: false },
+  session: { type: 'string' },
+  version: { type: 'boolean', short: 'v', default: false },
   help: { type: 'boolean', short: 'h' },
 } })
 
 async function main(): Promise<void> {
-  const command = positionals[0] ?? 'help'
+  const first = positionals[0]
+  const commands = ['run', 'serve', 'status', 'stop', 'retry', 'chat', 'help']
+  const command = first && commands.includes(first) ? first : 'chat'
+  if (values.version) { console.log('pi-superagent 0.2.0'); return }
   if (values.help || command === 'help') {
-    console.log('pi-superagent run "任务" | serve | status | stop <ticket> | retry <ticket>\n--cwd <git仓库> --state <状态目录> --config <配置JSON> --allow-shell\nserve: --repository owner/repo --bot 用户名 --allowed 用户1,用户2\n模型：OPENAI_BASE_URL、OPENAI_MODEL、OPENAI_API_KEY；面板：PI_SUPERAGENT_TOKEN')
+    console.log('pi-superagent ["任务"]：当前目录交互式 coding CLI\npi-superagent -p "任务"：单次输出；-c：恢复当前目录会话\npi-superagent run "任务" | serve | status | stop <ticket> | retry <ticket>\n--cwd <目录> --session <会话JSON> --allow-shell（非沙箱）\n工单模式：--state <状态目录> --config <配置JSON>\nserve: --repository owner/repo --bot 用户名 --allowed 用户1,用户2\n模型：OPENAI_BASE_URL、OPENAI_MODEL、OPENAI_API_KEY；面板：PI_SUPERAGENT_TOKEN')
     return
   }
-  if (!['run', 'serve', 'status', 'stop', 'retry'].includes(command)) throw new Error('未知命令')
+  if (command === 'chat') {
+    if (values.config || values.repository || values.bot || values.allowed) throw new Error('coding 模式不接受服务配置，请使用 run 或 serve')
+    const cwd = resolve(values.cwd!)
+    const workspace = createHash('sha256').update(cwd).digest('hex').slice(0, 24)
+    await runCoding({ cwd, sessionPath: values.session ? resolve(values.session) : resolve(homedir(), '.pi-superagent', 'sessions', `${workspace}.json`),
+      resume: values.continue, print: values.print, allowShell: values['allow-shell'],
+      prompt: (first === 'chat' ? positionals.slice(1) : positionals).join(' ') || undefined })
+    return
+  }
+  if (values.print || values.continue || values.session) throw new Error('-p、-c、--session 仅用于 coding 模式')
   if (command === 'run' && !positionals.slice(1).join(' ').trim()) throw new Error('run 必须提供任务文本')
   if (['status', 'stop', 'retry'].includes(command) && process.env.PI_SUPERAGENT_TOKEN) {
     if (command !== 'status' && !positionals[1]) throw new Error('必须提供工单 ID')
@@ -110,7 +129,7 @@ async function main(): Promise<void> {
 main().catch(error => {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
   console.error(code === 'ELOCKED' ? 'serve 正在使用该状态目录，请通过面板操作，或停止 serve 后重试。'
-    : error instanceof Error && error.message.startsWith('pi 宿主') ? error.message
+    : error instanceof Error && (error.message.startsWith('pi 宿主') || error.message.startsWith('缺少环境变量') || error.message.startsWith('编码助手运行失败')) ? error.message
       : '启动或执行失败，请检查参数、配置、接口凭据和状态目录。')
   process.exitCode = 1
 })

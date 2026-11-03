@@ -4,17 +4,47 @@
 
 本项目基于 [deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) 的 MIT 源码，并直接依赖 pi 1.5.0 的 `pi-agent-core`、`pi-ai`。原型的 DSH 适配器、React 面板和测试保留为兼容实现。新 pi 宿主与原 DSH 宿主不是每个外围功能都等价；下文明确区分已接通能力与保留的兼容层。
 
-## 快速开始
+## 安装与快速开始
 
-要求 Node.js 24+、Git；GitHub 模式还需已认证的 `gh`。
+要求 Node.js 24+；从 GitHub 安装还需 Git。GitHub 服务模式需已认证的 `gh`。
 
 ```sh
-npm ci
-npm run build
+npm install -g github:thanatoscosmic-ai/pi-superagent
 export OPENAI_BASE_URL=https://api.deepseek.com/v1
 export OPENAI_MODEL=deepseek-chat
 export OPENAI_API_KEY=你的接口凭据
-node dist/cli.js run "把 README 中指定的拼写错误改为正确文本" --cwd /绝对路径/目标仓库
+pi-superagent
+```
+
+在目标项目目录运行 `pi-superagent`，默认进入交互式 coding CLI，直接读写当前项目，**不创建 worktree**。支持多轮对话、模型流式输出、工具执行状态与 Ctrl+C 中断。该模式的权限来自当前终端操作者，不使用 GitHub 团队准入评估；团队自动化仍使用下文 `run/serve` 的领域授权链路。
+
+```sh
+pi-superagent "先阅读项目，解释代码结构"
+pi-superagent -p "修正 README 中指定的错字"
+pi-superagent -c
+pi-superagent --cwd /绝对路径/项目 --allow-shell
+pi-superagent --version
+```
+
+`-p/--print` 单次输出后退出；`-c/--continue` 恢复当前目录最近保存的会话。会话默认位于 `~/.pi-superagent/sessions/`，也可通过 `--session /路径/会话.json` 指定；会话包含代码与对话，按私密数据保管。`/help` 查看交互命令，`/new` 清空上下文，`/status` 查看会话状态，`/shell on|off` 显式切换非沙箱 Shell，`/exit` 退出。
+
+GitHub 安装会自动构建 CLI；npm tarball 已携带构建产物，不要求使用者安装 TypeScript 或 DSH。DSH 包仅作为源码开发与回归测试依赖，不作为 coding CLI 的运行依赖。本项目尚未发布到 npm registry，不要使用裸 `npm install -g pi-superagent` 代替上述 GitHub 地址。
+
+源码开发：
+
+```sh
+git clone https://github.com/thanatoscosmic-ai/pi-superagent.git
+cd pi-superagent
+npm ci
+npm run check
+npm link
+pi-superagent --help
+```
+
+## 工单与服务模式
+
+```sh
+pi-superagent run "把 README 中指定的拼写错误改为正确文本" --cwd /绝对路径/目标仓库
 ```
 
 任务在独立 Git worktree 中执行，不覆盖原工作目录；结果显示 worktree 路径与工单状态。首次无配置的本地运行会添加本地 `operator` 授权；显式 `--config` 不会自动改写允许名单或规则。默认仅启用受目录边界约束的文件工具。需要运行测试、Git 提交或创建 PR 时，显式添加 `--allow-shell`。Shell **不是操作系统沙箱**，只能用于可信仓库与受控账户；建议容器、独立凭据和最小 GitHub 权限。Shell 子进程过滤包含 KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL 的环境变量，工具输出对已知秘密原文脱敏；不支持依赖 `GH_TOKEN` / `GITHUB_TOKEN` 的 Shell 认证，`gh` 可使用系统钥匙串。HOME/PATH 仍保留，无法防止未知文件凭据、编码泄露或网络外传。
@@ -23,7 +53,7 @@ node dist/cli.js run "把 README 中指定的拼写错误改为正确文本" --c
 
 ```sh
 export PI_SUPERAGENT_TOKEN=设置一个至少32字符的随机访问令牌
-node dist/cli.js serve --cwd /绝对路径/目标仓库 \
+pi-superagent serve --cwd /绝对路径/目标仓库 \
   --repository owner/repo --bot bot-login --allowed trusted-login \
   --config examples/pi-settings.json --allow-shell
 ```
@@ -35,9 +65,9 @@ node dist/cli.js serve --cwd /绝对路径/目标仓库 \
 其他命令：
 
 ```sh
-node dist/cli.js status --state /绝对路径/状态目录
-node dist/cli.js stop <ticket-id> --state /绝对路径/状态目录
-node dist/cli.js retry <ticket-id> --state /绝对路径/状态目录
+pi-superagent status --state /绝对路径/状态目录
+pi-superagent stop <ticket-id> --state /绝对路径/状态目录
+pi-superagent retry <ticket-id> --state /绝对路径/状态目录
 npm run check
 ```
 
@@ -79,6 +109,23 @@ Source → Trigger → Thread → Eval → Decision
 余弦阈值工具位于 `src/pi/similarity.ts`：对最多 50 个向量的所有配对计算真实余弦标量，降序取上四分位边界；`autoDistanceThreshold` 明确返回 `1 - similarity`，零向量配对跳过。该工具不改变 Policy，当前不是 embedding 记忆系统。
 
 测试使用 pi 的 scripted faux provider，无需付费模型凭据，覆盖真实 agent 工具循环与临时 Git worktree；平台测试使用注入传输。离线通过不能替代真实模型、GitHub 或飞书部署验收。
+
+## 原型思路核对
+
+核对结果：**保留并复用了原型完整领域核心，但不能声称默认 coding CLI 已接入原型全部运行机制。** `src/core/` 和 `src/policy.ts` 与原型逐文件一致，新增 coding 模式不会删改原有 `run/serve` 链路。
+
+| 原型设计 | `run/serve` | 默认 coding CLI |
+| --- | --- | --- |
+| Source、Trigger、Thread、Eval、Decision、Mandate、Ticket、Assignment | 复用完整领域模型 | 直接终端会话，不经这些领域对象 |
+| gate、逐规则评估、observe/auto、Mandate revalidate | 已接入 | 当前操作者直接授权，不进行团队准入 |
+| Subscription 扇出、Correlation 仅上下文、handback | 已接入 core 与 worker 工具 | 多轮消息上下文，不做跨来源订阅 |
+| SQLite 事务、Effects/Outbox、幂等接收及平台回写 | 已接入 | 私密 JSON 会话与原子保存，不使用 effect/outbox |
+| 工单恢复、Assignment 与 Session 分离、并发和暂停 | 已接入并有回归测试 | 单 Agent，支持会话恢复与 Ctrl+C |
+| 完整主 Session 路由工具、版本化提示词与 skills | DSH 兼容代码保留，pi 宿主尚未全接 | 仅 coding 工具与固定提示词 |
+| DSH 后台 job/subagent、完整 React 设置面板 | 保留原型实现，pi 模式尚未迁移 | 未接入 |
+| GitHub、飞书 | pi 适配器接入；飞书范围小于原型 | 不自动监听平台 |
+
+两种模式共享 pi 模型层与受目录边界约束的 coding 工具。默认交互模式的目的是安装后即用；原型领域治理主链路仍由 `run/serve` 提供，但 Outbox 永久不可达处理、完整主 Session 路由工具、提示词版本/skills、后台 jobs/subagents、完整 React 设置面板以及飞书历史轮询仍未全部迁移。完整领域源码保留不等于完整外围功能已经迁移，这些缺口没有被标记为实现完成。
 
 ## 上游设计文档
 
