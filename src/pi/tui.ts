@@ -126,7 +126,7 @@ function createSanitizer() {
       .replace(/(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/g, '')
       .replace(/\x1b[^\n]*/g, '')
       .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '')
-      .replace(/((?:[\w.-]*(?:key|token|secret|password|credential|authorization|cookie)[\w.-]*)["']?\s*[=:]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&}]+)/gi, '$1[凭据已隐藏]')
+      .replace(/(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|credentials?|authorization|cookie|token|secret)["']?\s*[=:]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&}]+)/gi, '$1[凭据已隐藏]')
     for (const secret of values) text = text.split(secret).join('[凭据已隐藏]')
     if (streaming) {
       let keep = 0
@@ -329,6 +329,7 @@ export async function runTerminal(
     }
   }
   const handleMessage = (ticketId: string, message: AgentMessage, phase: 'start' | 'update' | 'end', delta?: string) => {
+    if (message.role === 'user' && ticketId === 'dialogue') return
     if (message.role !== 'assistant' && message.role !== 'user') return
     const text = messageText(message)
     const fingerprint = `${ticketId}:${message.role}:${'timestamp' in message ? message.timestamp : ''}:${text}`
@@ -349,7 +350,7 @@ export async function runTerminal(
     }
     active.text = text || (delta ? active.text + delta : active.text)
     active.component.streaming = phase !== 'end'
-    active.component.setText(`assistant · ${ticketId}\n\n${active.text}${phase === 'end' && 'errorMessage' in message && message.errorMessage ? `\n${message.errorMessage}` : ''}`)
+    active.component.setText(`${ticketId === 'dialogue' ? 'assistant · 对话' : `assistant · ${ticketId}`}\n\n${active.text}${phase === 'end' && 'errorMessage' in message && message.errorMessage ? `\n${message.errorMessage}` : ''}`)
     if (phase === 'end') {
       endedMessages.add(fingerprint)
       activeMessages.delete(ticketId)
@@ -364,7 +365,7 @@ export async function runTerminal(
       } else if (event.type === 'notice' || event.type === 'reply') {
         addMessage(event.type === 'reply' ? 'assistant' : 'notice', event.text, event.type === 'reply' ? event.ticketId : undefined)
       } else if (event.type === 'domain') {
-        addMessage('domain', `${event.value.type}\n${stringify(event.value.data)}`)
+        addMessage('状态', `${event.value.type}\n${stringify(event.value.data)}`)
         snapshot = controller.snapshot()
         restore()
       } else {

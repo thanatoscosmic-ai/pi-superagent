@@ -165,6 +165,19 @@ afterEach(() => {
 })
 
 describe('pi 组件终端', () => {
+  it('领域 threadKey 保持可读，只有凭据字段被隐藏', async () => {
+    const app = launch()
+    app.controller.emit({ type: 'domain', value: { type: 'eval.started', at: 'now', data: {
+      evalId: 'eval-1', threadKey: 'local:thread-1', triggerIds: ['trigger-1'], strength: 'explicit',
+    } } })
+    app.controller.emit({ type: 'notice', text: '{"apiKey":"not-for-display","threadKey":"local:thread-2","policyVersion":"policy-1"}' })
+    const screen = app.render()
+    expect(screen).toContain('local:thread-1')
+    expect(screen).toContain('local:thread-2')
+    expect(screen).toContain('policy-1')
+    expect(screen).not.toContain('not-for-display')
+    await exit(app)
+  })
   it('使用真实 TuiMainScreen Markdown 多行 Editor，提交后 Ctrl+C 完整清理', async () => {
     const loaderStop = vi.spyOn(Loader.prototype, 'stop')
     const app = launch()

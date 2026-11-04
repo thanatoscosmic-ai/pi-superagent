@@ -70,7 +70,7 @@ async function setup(config?: unknown, configureAgent?: (agent: Agent) => void) 
   const settled = async (timeout = 10_000) => {
     await vi.waitFor(() => {
       const value = required(controllers.at(-1)).snapshot()
-      expect(value.evaluating + value.queued + value.pendingReplies).toBe(0)
+      expect(value.evaluating + value.queued + value.pendingReplies + value.running).toBe(0)
       expect(query('SELECT * FROM effect')).toHaveLength(0)
       expect(agents.every(agent => !agent.state.isStreaming)).toBe(true)
     }, { timeout, interval: 20 })
@@ -201,6 +201,160 @@ describe('TerminalController 真实领域运行', () => {
     expect(h.query('SELECT value FROM decision').some(row => JSON.parse(String(row.value)).kind === 'ignore')).toBe(true)
   })
 
+  it('hi 和 nihao 连续评估 ignore 后真实对话，无工具无工单，resume 保留脱敏上下文和 processed', async () => {
+    const h = await setup()
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '普通问候，不请求实施' })
+    vi.stubEnv('TERMINAL_DIALOGUE_SECRET', 'dialogue-secret-729')
+    h.controller.subscribe(() => { throw new Error('坏 dialogue listener') })
+    h.controller.subscribe(async () => { throw new Error('异步坏 dialogue listener') })
+    const responses = () => h.events.flatMap(event => event.type === 'agent' && event.ticketId === 'dialogue'
+      && event.value.type === 'message_end' && event.value.message.role === 'assistant'
+      ? [event.value.message.content.filter(part => part.type === 'text').map(part => part.text).join('')] : [])
+    h.provider.setResponses([fauxAssistantMessage('你好！dialogue-secret-729')])
+    await h.controller.submit('hi')
+    await h.settled()
+    h.provider.setResponses([fauxAssistantMessage('你好，有什么问题？')])
+    await h.controller.submit('nihao')
+    await h.settled()
+    expect(responses()).toEqual(['你好！dialogue-secret-729', '你好，有什么问题？'])
+    expect(h.assess).toHaveBeenCalledTimes(2)
+    expect(h.loaded).toHaveLength(2)
+    expect(h.loaded.every(options => options.tools?.length === 0)).toBe(true)
+    expect(h.loaded[1]?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('hi'))).toBe(true)
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(2)
+    expect(h.query('SELECT * FROM outbox')).toHaveLength(0)
+    expect(h.events.some(event => event.type === 'reply')).toBe(false)
+    expect(readFileSync(join(h.cwd, 'message.txt'), 'utf8')).toBe('old')
+    const row = required(h.query('SELECT * FROM pi_terminal_dialogue')[0])
+    expect(String(row.messages)).not.toContain('dialogue-secret-729')
+    expect(String(row.messages)).toContain('[凭据已隐藏]')
+    expect(JSON.parse(String(row.processed))).toHaveLength(2)
+    expect(h.controller.snapshot().health.dialogue).toMatchObject({ state: 'ignore', detail: '普通问候，不请求实施' })
+    await h.controller.close()
+    const resumed = await h.open(true)
+    h.provider.setResponses([fauxAssistantMessage('上下文仍在')])
+    await resumed.submit('继续对话')
+    await h.settled()
+    expect(h.loaded.at(-1)?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('nihao'))).toBe(true)
+    expect(JSON.parse(String(h.query('SELECT processed FROM pi_terminal_dialogue')[0]?.processed))).toHaveLength(3)
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(3)
+  })
+
+  it('目标未确定或规则不匹配的实施请求保持 gate，dialogue 解释和澄清不 write', async () => {
+    const h = await setup()
+    h.assess.mockResolvedValueOnce({ ...assessment, direction: { implementation_requested: true, target_basis: 'undetermined', requires_design_decision: true, evidence: '未指定目标' } })
+    h.provider.setResponses([
+      fauxAssistantMessage([fauxToolCall('write', { path: 'message.txt', content: 'forbidden' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage('目标尚未确定，未执行修改。你希望 message.txt 改成什么内容？'),
+    ])
+    await h.controller.submit('帮我把项目改好')
+    await h.settled()
+    expect(h.loaded[0]?.tools).toEqual([])
+    expect(h.loaded[0]?.systemPrompt).toContain('directionUnsettled')
+    expect(h.loaded[0]?.systemPrompt).toContain('一个澄清问题')
+    expect(h.loaded[0]?.systemPrompt).toContain('ignore 不代表允许执行')
+    expect(h.events.some(event => event.type === 'agent' && event.ticketId === 'dialogue' && event.value.type === 'tool_execution_end' && event.value.isError)).toBe(true)
+    expect(h.events.some(event => event.type === 'agent' && event.value.type === 'message_end' && event.value.message.role === 'assistant'
+      && JSON.stringify(event.value.message.content).includes('你希望 message.txt'))).toBe(true)
+    expect(readFileSync(join(h.cwd, 'message.txt'), 'utf8')).toBe('old')
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    h.assess.mockResolvedValueOnce({ ...assessment, rule_assessments: [{ rule_id: 'requested', matched: false, reason: '不匹配规则' }] })
+    h.provider.setResponses([fauxAssistantMessage('请求不匹配当前规则，未执行。你希望实施的具体目标和范围是什么？')])
+    await h.controller.submit('再做一个修改')
+    await h.settled()
+    expect(h.loaded.at(-1)?.systemPrompt).toContain('noRuleMatched')
+    expect(h.loaded.at(-1)?.tools).toEqual([])
+    expect(h.query('SELECT * FROM ticket')).toHaveLength(0)
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(2)
+  })
+
+  it('dialogue 串行队列独立于其他工单，busy、interrupt、pause、close 安全取消并落盘', async () => {
+    let block = false
+    let entered = 0
+    const h = await setup(undefined, agent => {
+      agent.prepareRequest = async (_request, signal) => {
+        if (!block || agent.state.tools.length) return
+        entered++
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve()
+          else signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+      }
+    })
+    h.provider.setResponses(waiting())
+    await h.controller.submit('明确任务')
+    await h.settled()
+    const ticket = required(h.controller.snapshot().tickets[0])
+    await h.controller.command('/new')
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '对话而非实施' })
+    block = true
+    await h.controller.submit('hi')
+    await vi.waitFor(() => expect(entered).toBe(1))
+    expect(h.controller.snapshot().running).toBe(1)
+    await expect(h.controller.command('/mode coding')).rejects.toThrow('idle')
+    await expect(h.controller.command('/shell on')).rejects.toThrow('idle')
+    await expect(h.controller.command('/new')).rejects.toThrow('dialogue')
+    await h.controller.submit('nihao')
+    await vi.waitFor(() => expect(h.controller.snapshot().queued).toBe(1))
+    expect(entered).toBe(1)
+    await h.controller.interrupt()
+    expect(h.agents[1]?.state.isStreaming).toBe(false)
+    expect(h.controller.snapshot().paused).toBe(false)
+    expect(h.controller.snapshot().tickets[0]?.mandate).toEqual(ticket.mandate)
+    expect(h.controller.snapshot().tickets[0]?.ended).toBeUndefined()
+    await h.controller.command('/resume')
+    await vi.waitFor(() => expect(entered).toBe(2))
+    await h.controller.command('/pause')
+    expect(h.controller.snapshot()).toMatchObject({ paused: true, running: 0 })
+    await h.controller.command('/resume')
+    await h.controller.submit('关闭时对话')
+    await vi.waitFor(() => expect(entered).toBe(3))
+    await Promise.all([h.controller.close(), h.controller.close()])
+    expect(h.agents.every(agent => !agent.state.isStreaming)).toBe(true)
+    expect(String(h.query('SELECT messages FROM pi_terminal_dialogue')[0]?.messages)).toContain('关闭时对话')
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(4)
+    expect(JSON.parse(String(h.query('SELECT processed FROM pi_terminal_dialogue')[0]?.processed))).toHaveLength(3)
+  })
+
+  it('dialogue 最多 4 turn，未知脚本工具不执行也不创建工单', async () => {
+    const h = await setup()
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '不执行' })
+    h.provider.setResponses(Array.from({ length: 6 }, (_, index) => fauxAssistantMessage([
+      fauxToolCall('write', { path: 'message.txt', content: 'forbidden' }, { id: `write-${index}` }),
+    ], { stopReason: 'toolUse' })))
+    await h.controller.submit('未授权修改')
+    await h.settled()
+    expect(h.events.some(event => event.type === 'notice' && event.text.includes('4 turn'))).toBe(true)
+    expect(h.events.filter(event => event.type === 'agent' && event.value.type === 'tool_execution_end')).toHaveLength(4)
+    expect(h.loaded[0]?.tools).toEqual([])
+    expect(readFileSync(join(h.cwd, 'message.txt'), 'utf8')).toBe('old')
+    expect(h.query('SELECT * FROM ticket')).toHaveLength(0)
+  })
+
+  it('dialogue 30 秒超时取消并给可行动 notice，不伪造回复', async () => {
+    let entered = false
+    const h = await setup(undefined, agent => {
+      agent.prepareRequest = async (_request, signal) => {
+        entered = true
+        await new Promise<void>(resolve => {
+          if (signal?.aborted) resolve()
+          else signal?.addEventListener('abort', () => resolve(), { once: true })
+        })
+      }
+    })
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '普通问题' })
+    vi.useFakeTimers()
+    try {
+      await h.controller.submit('一个问题')
+      await vi.waitFor(() => expect(entered).toBe(true))
+      await vi.advanceTimersByTimeAsync(30_000)
+      await vi.waitFor(() => expect(h.events.some(event => event.type === 'notice' && event.text.includes('30 秒') && event.text.includes('重新发送'))).toBe(true))
+      expect(h.controller.snapshot().running).toBe(0)
+      expect(h.events.some(event => event.type === 'reply')).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
   it('真实 failed attention notice，可 retry 和 stop', async () => {
     const h = await setup()
     h.provider.setResponses([
@@ -314,6 +468,9 @@ describe('TerminalController 真实领域运行', () => {
     expect(h.controller.snapshot().tickets).toHaveLength(0)
     expect(h.query('SELECT value FROM decision').some(row => JSON.parse(String(row.value)).kind === 'unavailable')).toBe(true)
     expect(h.loaded).toHaveLength(0)
+    expect(h.events.some(event => event.type === 'notice' && event.text.includes('unavailable') && event.text.includes('凭据') && event.text.includes('重新发送'))).toBe(true)
+    expect(h.events.some(event => event.type === 'reply' || event.type === 'agent')).toBe(false)
+    expect(h.controller.snapshot().health.dialogue).toMatchObject({ state: 'unavailable', detail: expect.stringContaining('结构化输出') })
   })
 
   it('coding 运行中 followup，interrupt 和 close 取消，暂停不丢历史消息', async () => {

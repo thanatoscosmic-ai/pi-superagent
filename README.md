@@ -23,7 +23,7 @@ npm start -- --cwd /绝对路径/目标项目
 
 启动器自动读取安装仓库的 `.env`，已有环境变量优先；`--cwd` 指定目标目录。使用 `npm start` 未指定 `--cwd` 时，目标是 pi-superagent 仓库；直接运行启动脚本则保持调用者当前目录。
 
-在真实终端默认进入 **pi 同款组件构建的工单 TUI**：使用 `@earendil-works/pi-tui` 的多行编辑器、Markdown 流式消息、工具卡片和底部状态栏。目标目录必须是 Git 仓库；请求经过真实 Policy/Eval，只有 accept 才创建 Mandate/Ticket，执行在独立 worktree。不是仅给普通聊天加装饰。
+在真实终端默认进入 **pi 同款组件构建的工单 TUI**：使用 `@earendil-works/pi-tui` 的多行编辑器、Markdown 流式消息、工具卡片和底部状态栏。目标目录必须是 Git 仓库；请求经过真实 Policy/Eval，只有 accept 才创建 Mandate/Ticket，执行在独立 worktree。不是仅给普通聊天加装饰。问候、咨询等不需要开工单的消息由无工具的对话 Agent 正常回答；编码请求若未满足准入，则解释原因并澄清，不会绕过 Policy 去修改文件。
 
 状态栏实时显示评估数、运行工单、持久化队列、待回写和待人工事项；工单详情显示授权范围、Assignment、Report 和工作目录。`/mode coding` 或 `--direct` 切换为当前目录直接编码，此模式不创建领域工单；界面会明确标记区别。`-p`、管道和 `--plain` 保留纯文本 coding 行为。
 
