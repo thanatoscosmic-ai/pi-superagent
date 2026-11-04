@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import {
   CombinedAutocompleteProvider,
   Container,
@@ -77,6 +78,7 @@ const commands = [
   { name: 'shell', description: 'Shell 开关', argumentHint: 'on|off' },
   { name: 'new', description: '新建会话' },
   { name: 'tools', description: '展开或折叠工具输出', argumentHint: 'expand|collapse' },
+  { name: 'debug', description: '本地调试事件和详情', argumentHint: 'on|off' },
   { name: 'help', description: '命令帮助' },
   { name: 'status', description: '当前状态' },
   { name: 'exit', description: '退出' },
@@ -84,11 +86,11 @@ const commands = [
 const outputLimit = 16_000
 const secretName = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE/i
 
-function stringify(value: unknown): string {
+function stringify(value: unknown, sanitize?: (text: string) => string): string {
   if (typeof value === 'string') return value
   if (value instanceof Error) return value.message
   try {
-    return JSON.stringify(value) ?? ''
+    return JSON.stringify(value, sanitize ? (_, part) => typeof part === 'string' ? sanitize(part) : part : undefined) ?? ''
   } catch {
     return '[无法显示的数据]'
   }
@@ -166,7 +168,7 @@ class SafeMarkdown extends Markdown {
   streaming = false
 
   constructor(private sanitize: Sanitize, text: string, color?: (text: string) => string) {
-    super('', 1, 1, markdownTheme, color ? { color } : undefined, { renderLatex: false })
+    super('', 1, 0, markdownTheme, color ? { color } : undefined, { renderLatex: false })
     this.source = text
   }
 
@@ -175,19 +177,27 @@ class SafeMarkdown extends Markdown {
   }
 
   override render(width: number): string[] {
-    super.setText(this.sanitize(this.source, this.streaming))
+    const text = this.sanitize(this.source, this.streaming)
+    if (!text.trim()) return []
+    super.setText(text)
     return safeLines(super.render(width), width, this.sanitize)
   }
 }
 
 class SafeText extends Text {
-  constructor(private sanitize: Sanitize, private source: () => string, private color = identity) {
+  constructor(private sanitize: Sanitize, private source: () => string, private color = identity, private maxLines?: number) {
     super('', 0, 0)
   }
 
   override render(width: number): string[] {
-    this.setText(this.sanitize(this.source()).split('\n').map(line => line.startsWith('report:') ? yellow(line) : this.color(line)).join('\n'))
-    return safeLines(super.render(width), width, this.sanitize)
+    const text = this.sanitize(this.source())
+    if (!text.trim()) return []
+    this.setText(text.split('\n').map(line => {
+      const content = this.maxLines === undefined ? line : truncateToWidth(line, width, '…')
+      return line.startsWith('report:') ? yellow(content) : this.color(content)
+    }).join('\n'))
+    const lines = safeLines(super.render(width), width, this.sanitize)
+    return this.maxLines === undefined ? lines : lines.slice(0, this.maxLines)
   }
 }
 
@@ -227,14 +237,27 @@ class ToolCard implements Component {
 
   invalidate(): void {}
 
+  path = ''
+
   render(width: number): string[] {
-    const output = this.expanded ? this.output : this.output.split('\n').slice(0, 6).join('\n').slice(0, 700)
-    const hidden = output.length < this.output.length
-    const text = `\n工具 ${this.name} · ${this.state} · ${this.ticketId} · ${this.id}\nargs/path: ${this.args}\n${output}${hidden ? '\n[collapsed · /tools expand]' : ''}${this.truncated ? '\n[输出已截断，最多 16000 字符]' : ''}\n`
     const color = this.state === '完成' ? green : this.state === '失败' ? red : cyan
-    const styled = this.sanitize(text).split('\n').map(line => line.startsWith('工具 ') ? color(line) : line).join('\n')
-    return safeLines(new Text(styled, 1, 0).render(width), width, this.sanitize)
+    const heading = color(truncateToWidth(this.sanitize(`工具 ${this.name} · ${this.state}${this.path ? `  ${this.path}` : ''}`), width, '…'))
+    if (!this.expanded) {
+      const summary = this.sanitize(this.output).split('\n').filter(line => line.trim()).slice(0, 2)
+      return safeLines([heading, ...summary.map(line => truncateToWidth(line, width, '…'))], width, this.sanitize)
+    }
+    const text = `args/path: ${this.args}\n${this.output}${this.truncated ? '\n[输出已截断，最多 16000 字符]' : ''}`
+    return safeLines([heading, ...new Text(this.sanitize(text), 0, 0).render(width)], width, this.sanitize)
   }
+}
+
+function shortPath(path: string): string {
+  const home = homedir()
+  return path === home ? '~' : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path
+}
+
+function modeLabel(mode: TerminalSnapshot['mode']): string {
+  return mode === 'coding' ? '编码' : '工单'
 }
 
 function ticketDetails(ticket: Ticket): string {
@@ -271,6 +294,12 @@ export async function runTerminal(
   let localBusy = 0
   let submitTail = Promise.resolve()
   let expanded = false
+  let debug = false
+  const debugEvents: string[] = []
+  const cacheEvent = (text: string) => {
+    debugEvents.push(sanitize(text).slice(0, outputLimit))
+    if (debugEvents.length > 50) debugEvents.shift()
+  }
   let closing = false
   let interrupting = false
   let loader: Loader | undefined
@@ -279,8 +308,9 @@ export async function runTerminal(
   let finish = () => {}
   const done = new Promise<void>(resolve => { finish = resolve })
 
-  const addMessage = (role: string, text: string, ticketId?: string) => {
-    const message = new SafeMarkdown(sanitize, `${role}${ticketId ? ` · ${ticketId}` : ''}\n\n${text}`)
+  const addMessage = (role: string, text: string) => {
+    const label = role === 'user' ? '你' : role === 'assistant' ? 'Agent' : '提示'
+    const message = new SafeMarkdown(sanitize, text.trim() ? `${label}\n${text}` : '')
     history.addChild(message)
     return message
   }
@@ -303,7 +333,7 @@ export async function runTerminal(
       for (const input of ticket.inputs) {
         if (input.kind !== 'text' && input.kind !== 'note') continue
         const key = `${ticket.id}:input:${input.id}`
-        const text = `历史 ${input.kind === 'text' ? 'user' : 'note'} · ${ticket.id}\n\n${input.text}`
+        const text = `${input.kind === 'text' ? '你' : '提示'}\n${input.text}`
         if (!restored.has(key)) {
           const component = new SafeMarkdown(sanitize, text)
           restored.set(key, component)
@@ -313,7 +343,7 @@ export async function runTerminal(
       for (const assignment of ticket.assignments) {
         if (!assignment.report) continue
         const key = `${ticket.id}:report:${assignment.id}`
-        const text = `历史 report · ${ticket.id} · ${assignment.report.state}\n\n${assignment.report.summary}`
+        const text = `Agent\n${assignment.report.summary}`
         if (!restored.has(key)) {
           const component = new SafeMarkdown(sanitize, text, yellow)
           restored.set(key, component)
@@ -323,7 +353,7 @@ export async function runTerminal(
     }
   }
   const notice = (value: unknown) => {
-    if (!closing) {
+    if (!closing && !/^决策 ignore：/.test(stringify(value))) {
       addMessage('notice', stringify(value))
       refresh()
     }
@@ -339,18 +369,19 @@ export async function runTerminal(
       endedMessages.add(fingerprint)
       const echoes = userEchoes.get(text) ?? 0
       if (echoes) userEchoes.set(text, echoes - 1)
-      else addMessage('user', text, ticketId)
+      else if (ticketId === 'coding' || !/^\s*[\[{]/.test(text)) addMessage('user', text)
       return
     }
     if (phase === 'start') activeMessages.delete(ticketId)
     let active = activeMessages.get(ticketId)
     if (!active) {
-      active = { component: addMessage('assistant', '', ticketId), text: '' }
+      active = { component: addMessage('assistant', ''), text: '' }
       activeMessages.set(ticketId, active)
     }
     active.text = text || (delta ? active.text + delta : active.text)
     active.component.streaming = phase !== 'end'
-    active.component.setText(`${ticketId === 'dialogue' ? 'assistant · 对话' : `assistant · ${ticketId}`}\n\n${active.text}${phase === 'end' && 'errorMessage' in message && message.errorMessage ? `\n${message.errorMessage}` : ''}`)
+    const body = `${active.text}${phase === 'end' && 'errorMessage' in message && message.errorMessage ? `\n${message.errorMessage}` : ''}`
+    active.component.setText(body.trim() ? `Agent\n${body}` : '')
     if (phase === 'end') {
       endedMessages.add(fingerprint)
       activeMessages.delete(ticketId)
@@ -363,10 +394,19 @@ export async function runTerminal(
         snapshot = event.value
         restore()
       } else if (event.type === 'notice' || event.type === 'reply') {
-        addMessage(event.type === 'reply' ? 'assistant' : 'notice', event.text, event.type === 'reply' ? event.ticketId : undefined)
+        if (event.type === 'reply') addMessage('assistant', event.text)
+        else if (/^决策 ignore：/.test(event.text)) cacheEvent(event.text)
+        else notice(event.text)
       } else if (event.type === 'domain') {
-        addMessage('状态', `${event.value.type}\n${stringify(event.value.data)}`)
+        cacheEvent(`${event.value.type}\n${stringify(event.value.data, sanitize)}`)
         snapshot = controller.snapshot()
+        const data = event.value.data
+        if (event.value.type === 'ticket.created' || event.value.type === 'ticket.ended' || event.value.type === 'thread.subscribed') {
+          const id = 'ticketId' in data ? String(data.ticketId) : ''
+          const ticket = snapshot.tickets.find(item => item.id === id)
+          const action = event.value.type === 'ticket.created' ? '已创建' : event.value.type === 'ticket.ended' ? '已结束' : '已订阅'
+          history.addChild(new SafeText(sanitize, () => `工单 ${id.slice(0, 8)} · ${action} · ${ticket?.title ?? '未命名工单'}`, dim, 1))
+        }
         restore()
       } else {
         const value = event.value
@@ -390,7 +430,14 @@ export async function runTerminal(
             history.addChild(card)
           }
           card.name = sanitize(value.toolName)
-          if ('args' in value) card.args = sanitize(stringify(value.args)).slice(0, 3000)
+          if ('args' in value) {
+            card.args = sanitize(stringify(value.args, sanitize)).slice(0, outputLimit)
+            if (value.args && typeof value.args === 'object') {
+              const args = value.args as Record<string, unknown>
+              const path = args.path ?? args.file_path ?? args.filePath
+              if (typeof path === 'string') card.path = shortPath(sanitize(path)).replace(/\s+/g, ' ')
+            }
+          }
           if (value.type === 'tool_execution_end') {
             card.state = value.isError ? '失败' : '完成'
             card.setOutput(value.result)
@@ -410,7 +457,20 @@ export async function runTerminal(
     editor.addToHistory(sanitize(text))
     if (text.startsWith('/')) {
       const [command, argument] = text.split(/\s+/)
-      if (command === '/ticket') selectedTicket = argument
+      if (command === '/ticket') {
+        selectedTicket = argument ?? selectedTicket
+        const ticket = snapshot.tickets.find(item => item.id === selectedTicket) ?? (!argument ? snapshot.tickets[0] : undefined)
+        if (!argument) {
+          if (ticket) notice(ticketDetails(ticket))
+          return
+        }
+      }
+      if (command === '/debug') {
+        if (argument === 'on' || argument === 'off') debug = argument === 'on'
+        else notice('用法：/debug on|off')
+        refresh()
+        return
+      }
       if (command === '/tools') {
         expanded = argument === 'expand' || argument === 'on' ? true : argument === 'collapse' || argument === 'off' ? false : !expanded
         for (const card of tools.values()) card.expanded = expanded
@@ -451,22 +511,39 @@ export async function runTerminal(
 
   try {
     snapshot = controller.snapshot()
-    tui.addChild(new SafeText(sanitize, () => `pi-superagent · ${snapshot.model}\ncwd: ${snapshot.cwd} · mode: ${snapshot.mode}\n`, cyan))
+    tui.addChild(new SafeText(sanitize, () => `pi-superagent · ${snapshot.model}\n${shortPath(snapshot.cwd)} · ${modeLabel(snapshot.mode)}`, line => {
+      if (!line.startsWith('pi-superagent')) return dim(line)
+      return `${bold(cyan('pi-superagent'))}${dim(line.slice('pi-superagent'.length))}`
+    }, 2))
     tui.addChild(history)
     tui.addChild(new SafeText(sanitize, () => {
       const ticket = snapshot.tickets.find(item => item.id === selectedTicket)
         ?? snapshot.tickets.find(item => item.assignments.some(assignment => assignment.state === 'running'))
         ?? snapshot.tickets.find(item => item.attention)
         ?? snapshot.tickets[0]
-      return ticket ? `\n${ticketDetails(ticket)}\n` : '\n当前 ticket: 无\n'
-    }))
+      return ticket ? `工单 ${ticket.title} · ${ticket.ended?.outcome ?? (ticket.assignments.some(assignment => assignment.state === 'running') ? '运行中' : '待处理')}\nscope: ${ticket.mandate.scope.replace(/\s+/g, ' ')} · worktree: ${shortPath(ticket.execution?.directory ?? '未分配')}` : ''
+    }, identity, 2))
+    tui.addChild(new SafeText(sanitize, () => debug ? [
+      '调试 · 最近 50 事件',
+      ...debugEvents,
+      ...Object.entries(snapshot.health).map(([name, health]) => `${name}: ${health.state} ${health.detail}`),
+      ...snapshot.tickets.filter(ticket => !selectedTicket || ticket.id === selectedTicket).map(ticketDetails),
+    ].join('\n') : ''))
     tui.addChild(waiting)
     tui.addChild(editor)
-    tui.addChild(new SafeText(sanitize, () => [
-      `评估:${snapshot.evaluating} 运行:${snapshot.running} 队列:${snapshot.queued + Math.max(0, localBusy - 1)} 回写:${snapshot.pendingReplies} attention:${snapshot.attention}`,
-      `paused:${snapshot.paused ? 'on' : 'off'} shell:${snapshot.shell ? 'on' : 'off'} · /help · /tools · Shift+Enter 多行`,
-      ...Object.entries(snapshot.health).map(([name, health]) => `${name}: ${health.state} ${health.detail}`),
-    ].join('\n')))
+    tui.addChild(new SafeText(sanitize, () => {
+      const stats = [
+        ['评估', snapshot.evaluating], ['运行', snapshot.running],
+        ['队列', snapshot.queued + Math.max(0, localBusy - 1)], ['回写', snapshot.pendingReplies], ['attention', snapshot.attention],
+      ].filter(([, count]) => count !== 0).map(([name, count]) => `${name}:${count}`).join(' ')
+      const errors = Object.entries(snapshot.health).filter(([, health]) => /unavailable|failed|error/i.test(health.state))
+        .map(([name, health]) => `${name}: ${health.state} ${truncateToWidth(sanitize(health.detail.split('\n')[0] ?? ''), 16, '…')}`).join(' · ')
+      return [
+        `${modeLabel(snapshot.mode)} · ${snapshot.model} · shell:${snapshot.shell ? 'on' : 'off'} · paused:${snapshot.paused ? 'on' : 'off'}`,
+        errors ? `异常 ${errors} · ${stats || '就绪'}` : stats || (localBusy || activeAgents.size ? '执行中' : '就绪'),
+        '/help · /tools · /debug · /status · Shift+Enter 多行 · Esc/Ctrl+C 取消',
+      ].join('\n')
+    }, line => line.startsWith('/help') ? dim(line) : line.includes('异常 ') ? yellow(line) : identity(line), 3))
     const provider = new CombinedAutocompleteProvider(commands, snapshot.cwd)
     const autocomplete: AutocompleteProvider = {
       triggerCharacters: ['/', '@'],

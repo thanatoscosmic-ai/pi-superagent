@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { AssistantMessage } from '@earendil-works/pi-ai'
 import {
@@ -165,6 +166,140 @@ afterEach(() => {
 })
 
 describe('pi 组件终端', () => {
+  it('问候界面紧凑，无原始领域、ignore、空工单和内部角色，保留澄清回答', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ cwd: `${homedir()}/projects/pi-superagent`, health: {
+      dialogue: { state: 'ignore', detail: '无须执行工具' },
+      source: { state: 'ready', detail: '六行健康详情\na\nb\nc\nd\ne' },
+    } })
+    const app = launch(controller)
+    controller.emit({ type: 'notice', text: '决策 ignore：问候无需工单' })
+    controller.emit({ type: 'domain', value: { type: 'eval.started', at: 'now', data: {
+      evalId: 'eval-hidden', threadKey: 'thread-hidden', triggerIds: ['trigger-hidden'], strength: 'explicit',
+    } } })
+    controller.agent({ type: 'message_end', message: assistant('你好！有什么可以帮你？') }, 'dialogue')
+    controller.agent({ type: 'message_end', message: { role: 'user', content: '{"internal":"worker-input"}', timestamp: 8 } })
+    const empty = assistant('', 9)
+    empty.content = [{ type: 'toolCall', id: 'empty-call', name: 'read', arguments: {} }]
+    controller.agent({ type: 'message_start', message: empty })
+    controller.agent({ type: 'message_end', message: empty })
+    controller.agent({ type: 'agent_end', messages: [empty] })
+    const text = app.render()
+    expect(text).toContain('~/projects/pi-superagent')
+    expect(text.split('\n').map(line => line.trim()).join('\n')).toContain('Agent\n你好！有什么可以帮你？')
+    expect(text.match(/Agent/g)).toHaveLength(1)
+    expect(text).toContain('就绪')
+    for (const hidden of ['ignore', '六行健康', 'eval-hidden', 'thread-hidden', 'worker-input', '当前 ticket', 'dialogue', 'assistant', '评估:0']) expect(text).not.toContain(hidden)
+    expect(text.split('\n').length).toBeLessThanOrEqual(20)
+    for (const width of [18, 40, 100]) {
+      app.terminal.resize(width)
+      const lines = app.screen?.render(width) ?? []
+      expect(lines.every(line => visibleWidth(line) <= width)).toBe(true)
+      expect(app.screen?.children[0]?.render(width)).toHaveLength(2)
+      expect(app.screen?.children.at(-1)?.render(width)).toHaveLength(3)
+    }
+    await exit(app)
+  })
+
+  it('调试回看仅最近50事件，关闭无JSON，重要事件只一行短id和标题', async () => {
+    const controller = new FakeController()
+    const id = 'abcdefgh-long-ticket-id'
+    controller.value = snapshot({ tickets: [ticket(id, { assignments: [], inputs: [] })] })
+    const app = launch(controller)
+    for (let i = 0; i < 51; i++) controller.emit({ type: 'domain', value: { type: 'eval.started', at: 'now', data: {
+      evalId: `cached-${String(i).padStart(3, '0')}`, threadKey: 'thread-cache', triggerIds: [], strength: 'explicit',
+    } } })
+    const history = app.screen?.children[1]
+    expect(history?.render(100)).toEqual([])
+    app.terminal.enter('/debug on')
+    expect(app.render()).not.toContain('cached-000')
+    expect(app.render()).toContain('cached-001')
+    expect(app.render()).toContain('cached-050')
+    app.terminal.enter('/debug on')
+    expect(app.render().match(/cached-050/g)).toHaveLength(1)
+    app.terminal.enter('/debug off')
+    for (const type of ['ticket.created', 'ticket.ended', 'thread.subscribed'] as const) {
+      if (type === 'ticket.created') controller.emit({ type: 'domain', value: { type, at: 'now', data: { ticketId: id, decisionId: 'D1', strength: 'explicit' } } })
+      else if (type === 'ticket.ended') controller.emit({ type: 'domain', value: { type, at: 'now', data: { ticketId: id, by: 'executor', outcome: 'completed' } } })
+      else controller.emit({ type: 'domain', value: { type, at: 'now', data: { ticketId: id, threadKey: 'raw-thread' } } })
+    }
+    const text = app.render()
+    expect(history?.render(100)).toHaveLength(3)
+    expect(text).toContain('工单 abcdefgh · 已创建 · 修复真实工单')
+    for (const hidden of [id, 'cached-', 'raw-thread', 'decisionId', 'mandate:']) expect(text).not.toContain(hidden)
+    app.terminal.enter('/ticket')
+    expect(app.render()).toContain(`ticket ${id}`)
+    expect(app.render()).toContain('mandate:')
+    expect(app.render()).toContain('assignment: 实现并验证')
+    expect(controller.command).not.toHaveBeenCalled()
+    await exit(app)
+  })
+
+  it('健康默认只显示异常一行，debug和status保留包括ignore与unavailable的完整详情', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ health: {
+      dialogue: { state: 'ignore', detail: '正常忽略详情' },
+      source: { state: 'ready', detail: '健康ready详情' },
+      model: { state: 'error', detail: '模型错误\n第二行错误\n第三行错误' },
+      executor: { state: 'unavailable', detail: '执行器不可用' },
+      worker: { state: 'failed', detail: 'worker失败' },
+    } })
+    controller.command.mockImplementation(async text => text === '/status' ? JSON.stringify(controller.value.health) : undefined)
+    const app = launch(controller)
+    expect(app.render()).toContain('model: error 模型错误')
+    expect(app.render()).toContain('unavailable')
+    expect(app.render()).toContain('failed')
+    expect(app.render()).not.toContain('健康ready详情')
+    expect(app.render()).not.toContain('正常忽略详情')
+    expect(app.screen?.children.at(-1)?.render(100)).toHaveLength(3)
+    app.terminal.enter('/debug on')
+    expect(app.render()).toContain('dialogue: ignore 正常忽略详情')
+    expect(app.render()).toContain('source: ready 健康ready详情')
+    expect(app.render()).toContain('执行器不可用')
+    app.terminal.enter('/debug off')
+    app.terminal.enter('/status')
+    await flush()
+    expect(app.render()).toContain('第三行错误')
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/status'])
+    await exit(app)
+  })
+
+  it('报告更新复用恢复消息，工具折叠最多三行且展开保留安全完整args', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket()] })
+    const app = launch(controller)
+    for (let i = 0; i < 5; i++) {
+      const current = ticket()
+      const report = current.assignments[0]?.report
+      if (report) report.summary = `报告版本${i}`
+      controller.emit({ type: 'snapshot', value: snapshot({ tickets: [current] }) })
+    }
+    expect(app.render().match(/报告版本4/g)).toHaveLength(1)
+    expect(app.render()).not.toContain('报告版本0')
+    controller.agent({ type: 'tool_execution_start', toolCallId: 'hidden-call-id', toolName: 'read', args: {
+      path: 'src/pi/tui.ts', offset: 8, token: 'hidden-credential', injected: '\x1b]52;c;BAD_CLIPBOARD\x07',
+    } })
+    controller.agent({ type: 'tool_execution_end', toolCallId: 'hidden-call-id', toolName: 'read', result: '第一行\n第二行\n第三行', isError: false })
+    for (const width of [18, 40, 100]) {
+      app.terminal.resize(width)
+      const history = app.screen?.children[1]
+      const card = history && 'children' in history ? (history.children as Array<{ render(width: number): string[] }>).at(-1) : undefined
+      expect(card?.render(width)).toHaveLength(3)
+      expect(app.screen?.render(width).every(line => visibleWidth(line) <= width)).toBe(true)
+    }
+    app.terminal.resize(100)
+    expect(app.render()).toContain('工具 read · 完成  src/pi/tui.ts')
+    expect(app.render()).not.toContain('第三行')
+    expect(app.render()).not.toContain('offset')
+    app.terminal.enter('/tools expand')
+    expect(app.render()).toContain('"offset":8')
+    expect(app.render()).toContain('第三行')
+    expect(app.render()).not.toContain('hidden-credential')
+    expect(app.render()).not.toContain('BAD_CLIPBOARD')
+    expect(app.render()).not.toContain('hidden-call-id')
+    await exit(app)
+  })
+
   it('领域 threadKey 保持可读，只有凭据字段被隐藏', async () => {
     const app = launch()
     app.controller.emit({ type: 'domain', value: { type: 'eval.started', at: 'now', data: {
@@ -172,7 +307,13 @@ describe('pi 组件终端', () => {
     } } })
     app.controller.emit({ type: 'notice', text: '{"apiKey":"not-for-display","threadKey":"local:thread-2","policyVersion":"policy-1"}' })
     const screen = app.render()
-    expect(screen).toContain('local:thread-1')
+    expect(screen).not.toContain('local:thread-1')
+    app.terminal.enter('/debug on')
+    expect(app.render()).toContain('local:thread-1')
+    expect(app.render()).toContain('trigger-1')
+    app.terminal.enter('/debug off')
+    expect(app.render()).not.toContain('local:thread-1')
+    expect(app.controller.command).not.toHaveBeenCalled()
     expect(screen).toContain('local:thread-2')
     expect(screen).toContain('policy-1')
     expect(screen).not.toContain('not-for-display')
@@ -256,11 +397,13 @@ describe('pi 组件终端', () => {
     controller.value = snapshot({ tickets: [ticket(), ticket('T2', { title: '第二工单' })], evaluating: 2,
       queued: 3, pendingReplies: 4, attention: 5, paused: true, shell: true,
       health: { source: { state: 'ready', detail: '本地健康' } } })
+    controller.command.mockImplementation(async text => text === '/ticket T2' ? 'ticket T2 · 第二工单\nmandate: 完整授权\nassignment: 实现并验证' : undefined)
     const app = launch(controller)
     const text = app.render()
-    for (const value of ['offline-model', 'mode: tickets', '历史用户消息', '历史完成报告',
-      'mandate:', 'scope:', 'worktree: /tmp/worktree/T1', 'report:', '评估:2', '队列:3',
-      '回写:4', 'attention:5', 'paused:on shell:on', '本地健康']) expect(text).toContain(value)
+    for (const value of ['offline-model', '工单', '历史用户消息', '历史完成报告',
+      'scope:', 'worktree: /tmp/worktree/T1', '评估:2', '队列:3',
+      '回写:4', 'attention:5', 'shell:on · paused:on']) expect(text).toContain(value)
+    for (const value of ['mandate:', 'report:', '本地健康', 'assignment:']) expect(text).not.toContain(value)
     controller.emit({ type: 'snapshot', value: controller.value })
     expect(app.render().match(/历史用户消息/g)).toHaveLength(2)
     const inputs = ['/tickets', '/ticket T2', '/pause', '/resume', '/stop T1', '/retry T1',
@@ -301,7 +444,7 @@ describe('pi 组件终端', () => {
     app.controller.emit({ type: 'domain', value: { type: 'ticket.ended', at: 'now',
       data: { ticketId: 'T1', by: 'executor', outcome: 'completed' } } })
     expect(app.render()).toContain('真实回写')
-    expect(app.render()).toContain('ticket.ended')
+    expect(app.render()).toContain('工单 T1 · 已结束')
     await exit(app)
   })
 
@@ -313,7 +456,10 @@ describe('pi 组件终端', () => {
     const output = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n') + '\n' + `${'x'.repeat(80)}\n`.repeat(250) + 'OUTSIDE_LIMIT'
     app.controller.agent({ type: 'tool_execution_update', toolCallId: 'call1', toolName: 'read', args: {},
       partialResult: { content: [{ type: 'text', text: output }] } })
-    expect(app.render()).toContain('collapsed')
+    expect(app.render()).not.toContain('args/path:')
+    expect(app.render()).not.toContain('call1')
+    expect(app.render()).toContain('line1')
+    expect(app.render()).not.toContain('line2')
     expect(app.render()).not.toContain('line19')
     app.controller.agent({ type: 'tool_execution_end', toolCallId: 'call1', toolName: 'read',
       result: { content: [{ type: 'text', text: output }] }, isError: false })
@@ -346,7 +492,9 @@ describe('pi 组件终端', () => {
     expect(raw).toContain('\x1b[32m"中文"\x1b[39m')
     expect(raw).toContain('\x1b[32m工具 read · 完成')
     expect(raw).toContain('\x1b[31m工具 write · 失败')
-    expect(raw).toContain('\x1b[33mreport:')
+    app.terminal.enter('/debug on')
+    expect(app.screen?.render(100).join('\n')).toContain('\x1b[33mreport:')
+    app.terminal.enter('/debug off')
     expect(raw).not.toContain('\x1b[35m')
     expect(raw).not.toContain('ATTACK')
     expect(raw).not.toContain('\x1b]')
@@ -369,7 +517,7 @@ describe('pi 组件终端', () => {
       if (text === '/tickets') return '唯一工单列表'
     })
     const app = launch(controller)
-    for (const input of ['/tools', '/tools expand', '/tools collapse', '/help', '/tickets']) {
+    for (const input of ['/tools', '/tools expand', '/tools collapse', '/debug on', '/debug off', '/debug invalid', '/help', '/tickets']) {
       app.terminal.enter(input)
       await flush()
     }
@@ -379,7 +527,7 @@ describe('pi 组件终端', () => {
     expect(text.match(/唯一工单列表/g)).toHaveLength(1)
     expect(text).not.toContain('未知 tools 命令')
     expect(text).not.toContain('展开或折叠工具输出')
-    expect(text.match(/ticket T1 · 修复真实工单/g)).toHaveLength(1)
+    expect(text.match(/工单 修复真实工单/g)).toHaveLength(1)
     await exit(app)
   })
 
