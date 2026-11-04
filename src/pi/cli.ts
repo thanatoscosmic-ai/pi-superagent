@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { runCoding } from './coding.ts'
+import { runTerminal } from './tui.ts'
+import { createTerminalController } from './terminal-controller.ts'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { PiRuntime } from './runtime.ts'
@@ -17,6 +19,8 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   bot: { type: 'string' },
   allowed: { type: 'string' },
   port: { type: 'string', default: '8787' },
+  direct: { type: 'boolean', default: false },
+  plain: { type: 'boolean', default: false },
   'allow-shell': { type: 'boolean', default: false },
   print: { type: 'boolean', short: 'p', default: false },
   continue: { type: 'boolean', short: 'c', default: false },
@@ -31,11 +35,22 @@ async function main(): Promise<void> {
   const command = first && commands.includes(first) ? first : 'chat'
   if (values.version) { console.log('pi-superagent 0.2.0'); return }
   if (values.help || command === 'help') {
-    console.log('pi-superagent ["任务"]：当前目录交互式 coding CLI\npi-superagent -p "任务"：单次输出；-c：恢复当前目录会话\npi-superagent run "任务" | serve | status | stop <ticket> | retry <ticket>\n--cwd <目录> --session <会话JSON> --allow-shell（非沙箱）\n工单模式：--state <状态目录> --config <配置JSON>\nserve: --repository owner/repo --bot 用户名 --allowed 用户1,用户2\n模型：OPENAI_BASE_URL、OPENAI_MODEL、OPENAI_API_KEY；面板：PI_SUPERAGENT_TOKEN')
+    console.log('pi-superagent ["任务"]：pi 风格交互式 coding CLI 工单 TUI（真实终端）\n--direct 当前目录编码；--plain 纯文本；-p 单次输出\n评估/授权/工单/执行/队列/待人工：实时状态\npi-superagent -p "任务"：单次输出；-c：恢复当前目录会话\npi-superagent run "任务" | serve | status | stop <ticket> | retry <ticket>\n--cwd <目录> --session <会话JSON> --allow-shell（非沙箱）\n工单模式：--state <状态目录> --config <配置JSON>\nserve: --repository owner/repo --bot 用户名 --allowed 用户1,用户2\n模型：OPENAI_BASE_URL、OPENAI_MODEL、OPENAI_API_KEY；面板：PI_SUPERAGENT_TOKEN')
     return
   }
   if (command === 'chat') {
-    if (values.config || values.repository || values.bot || values.allowed) throw new Error('coding 模式不接受服务配置，请使用 run 或 serve')
+    if (process.stdin.isTTY && process.stdout.isTTY && !values.print && !values.plain) {
+      if (values.repository || values.bot || values.allowed) throw new Error('TUI 平台监听请使用 serve，终端工单使用 --config')
+      if (values.session) throw new Error('TUI 使用 --state 存储工单与会话，JSON --session 仅用于 --plain')
+      const controller = await createTerminalController({ cwd: resolve(values.cwd!), stateDir: resolve(values.state!),
+        allowShell: values['allow-shell'], resume: values.continue, mode: values.direct ? 'coding' : 'tickets',
+        config: values.config ? JSON.parse(readFileSync(resolve(values.config), 'utf8')) : undefined })
+      try {
+        await runTerminal(controller, { initialPrompt: (first === 'chat' ? positionals.slice(1) : positionals).join(' ') || undefined })
+      } finally { await controller.close() }
+      return
+    }
+    if (values.config || values.repository || values.bot || values.allowed) throw new Error('纯文本 coding 模式不接受服务配置，请使用 run 或 serve')
     const cwd = resolve(values.cwd!)
     const workspace = createHash('sha256').update(cwd).digest('hex').slice(0, 24)
     await runCoding({ cwd, sessionPath: values.session ? resolve(values.session) : resolve(homedir(), '.pi-superagent', 'sessions', `${workspace}.json`),
@@ -43,7 +58,7 @@ async function main(): Promise<void> {
       prompt: (first === 'chat' ? positionals.slice(1) : positionals).join(' ') || undefined })
     return
   }
-  if (values.print || values.continue || values.session) throw new Error('-p、-c、--session 仅用于 coding 模式')
+  if (values.print || values.continue || values.session || values.direct || values.plain) throw new Error('-p、-c、--session、--direct、--plain 仅用于聊天模式')
   if (command === 'run' && !positionals.slice(1).join(' ').trim()) throw new Error('run 必须提供任务文本')
   if (['status', 'stop', 'retry'].includes(command) && process.env.PI_SUPERAGENT_TOKEN) {
     if (command !== 'status' && !positionals[1]) throw new Error('必须提供工单 ID')

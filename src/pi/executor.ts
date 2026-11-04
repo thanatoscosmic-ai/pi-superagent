@@ -287,6 +287,7 @@ export class PiExecutor implements Executor {
       return (await previousPrepare?.(request, signal)) ?? undefined
     }
     worker.unsubscribe = agent.subscribe(event => {
+      try { this.host.config.onAgentEvent?.(ticket.id, event) } catch {}
       if (event.type === 'message_end') {
         if (event.message.role === 'assistant' && event.message.stopReason === 'error') worker.error = this.errorText(event.message.errorMessage ?? '模型执行失败。')
         this.flush(worker)

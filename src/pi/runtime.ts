@@ -66,6 +66,7 @@ export class PiRuntime {
         withdraw: id => { this.store.receipts.withdraw(id); this.effects.cancel('reply', id) },
       },
       emit: event => {
+        this.store.afterCommit(() => config.onDomainEvent?.(event))
         if (event.type === 'ticket.ended') {
           const ended = this.store.tickets.get(event.data.ticketId)
           if (ended && ['merged', 'closed'].includes(event.data.outcome)) {
@@ -142,7 +143,7 @@ export class PiRuntime {
 
   receive(trigger: Trigger) { return this.engine.receive(trigger) }
 
-  submit(text: string, actor = 'operator', thread = randomUUID()): string {
+  submit(text: string, actor = 'operator', thread: string = randomUUID()): string {
     const id = key('local', thread, randomUUID())
     this.receive({ id, source: 'local', threads: [{ source: 'local', id: thread }], actor: { source: 'local', id: actor },
       human: true, addressed: 'direct', at: new Date().toISOString(), text,

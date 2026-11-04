@@ -1,3 +1,6 @@
+export { runTerminal } from './tui.ts'
+export { createTerminalController } from './terminal-controller.ts'
+export type { TerminalController, TerminalSnapshot, TerminalEvent } from './terminal-types.ts'
 export { runCoding } from './coding.ts'
 export { PiRuntime } from './runtime.ts'
 export { PiExecutor } from './executor.ts'

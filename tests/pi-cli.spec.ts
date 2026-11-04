@@ -16,6 +16,13 @@ describe('pi CLI', () => {
     expect(result.stdout).toContain('pi-superagent run')
     expect(result.stdout).toContain('OPENAI_BASE_URL')
   })
+  it('帮助说明真实工单 TUI 与直接编码的区别', async () => {
+    const result = await exec(process.execPath, ['--import', 'tsx', cli, '--help'])
+    expect(result.stdout).toContain('工单 TUI')
+    expect(result.stdout).toContain('--direct')
+    expect(result.stdout).toContain('--plain')
+    expect(result.stdout).toContain('评估/授权/工单/执行/队列/待人工')
+  })
   it('版本命令无需模型配置', async () => {
     const result = await exec(process.execPath, ['--import', 'tsx', cli, '--version'])
     expect(result.stdout.trim()).toBe('pi-superagent 0.2.0')

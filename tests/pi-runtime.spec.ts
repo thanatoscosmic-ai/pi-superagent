@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { PiRuntime } from '../src/pi/runtime.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import type { Assessment } from '../src/policy.ts'
+import type { RuntimeConfig } from '../src/pi/types.ts'
 
 const assessment: Assessment = {
   decision: 'accept', title: '修正文本', scope: '将 message.txt 内容改成 fixed', reason: '明确请求',
@@ -16,7 +17,7 @@ const assessment: Assessment = {
   intent_evidence: '用户明确要求修改', acknowledgement: '已接收',
 }
 
-function setup(assess = async () => assessment) {
+function setup(assess = async () => assessment, hooks: Pick<RuntimeConfig, 'onAgentEvent' | 'onDomainEvent'> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pi-runtime-'))
   const repo = join(root, 'repo')
   execFileSync('git', ['init', repo])
@@ -29,7 +30,7 @@ function setup(assess = async () => assessment) {
     fauxAssistantMessage([fauxToolCall('orchestrator_report', { state: 'ready', summary: '文本已修正' }, { id: 'report-1' })], { stopReason: 'toolUse' }),
     fauxAssistantMessage(fauxText('完成')),
   ])
-  const runtime = new PiRuntime({ stateDir: join(root, 'state'), repositoryDirectory: repo, assess,
+  const runtime = new PiRuntime({ stateDir: join(root, 'state'), repositoryDirectory: repo, assess, ...hooks,
     agentFactory: options => new Agent({ initialState: { ...options, model: provider.getModel(), thinkingLevel: 'off' }, streamFn: streamSimple }) })
   runtime.configure(SettingsSchema.parse({ policy: { sources: { local: { allowed: [{ id: 'operator' }] } } } }))
   const sent: string[] = []
@@ -54,6 +55,24 @@ describe('独立 pi 端到端运行', () => {
       expect(readFileSync(join(ticket.execution!.directory, 'message.txt'), 'utf8')).toBe('fixed')
       expect(readFileSync(join(h.repo, 'message.txt'), 'utf8')).toBe('old')
       expect(h.sent).toContain('已接收')
+    } finally { await cleanup(h) }
+  })
+  it('终端事件来自真实已提交领域状态与 worker 工具执行', async () => {
+    const domain: string[] = [], tools: string[] = []
+    const h = setup(async () => assessment, {
+      onDomainEvent: event => {
+        if (event.type === 'ticket.created') expect(h.runtime.store.tickets.get(event.data.ticketId)).toBeDefined()
+        domain.push(event.type)
+      },
+      onAgentEvent: (_id, event) => { if (event.type === 'tool_execution_end') tools.push(event.toolName) },
+    })
+    try {
+      h.runtime.start(); h.runtime.submit('修正文本'); await h.runtime.idle()
+      expect(domain).toContain('eval.started')
+      expect(domain).toContain('ticket.created')
+      expect(domain).toContain('ticket.ended')
+      expect(tools).toContain('write')
+      expect(tools).toContain('orchestrator_report')
     } finally { await cleanup(h) }
   })
   it('不允许的操作者不能开工单', async () => {

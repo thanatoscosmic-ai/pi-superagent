@@ -21,17 +21,25 @@ cp .env.example .env
 npm start -- --cwd /绝对路径/目标项目
 ```
 
-启动器自动读取安装仓库的 `.env`，已有环境变量优先；`--cwd` 指定编码目录。使用 `npm start` 未指定 `--cwd` 时，编码目录是 pi-superagent 仓库；直接运行启动脚本时则保持调用者当前目录。默认进入交互式 coding CLI，直接修改目标项目，不创建 worktree。当前终端操作者直接授权，团队自动化仍使用 `run/serve`。
+启动器自动读取安装仓库的 `.env`，已有环境变量优先；`--cwd` 指定目标目录。使用 `npm start` 未指定 `--cwd` 时，目标是 pi-superagent 仓库；直接运行启动脚本则保持调用者当前目录。
+
+在真实终端默认进入 **pi 同款组件构建的工单 TUI**：使用 `@earendil-works/pi-tui` 的多行编辑器、Markdown 流式消息、工具卡片和底部状态栏。目标目录必须是 Git 仓库；请求经过真实 Policy/Eval，只有 accept 才创建 Mandate/Ticket，执行在独立 worktree。不是仅给普通聊天加装饰。
+
+状态栏实时显示评估数、运行工单、持久化队列、待回写和待人工事项；工单详情显示授权范围、Assignment、Report 和工作目录。`/mode coding` 或 `--direct` 切换为当前目录直接编码，此模式不创建领域工单；界面会明确标记区别。`-p`、管道和 `--plain` 保留纯文本 coding 行为。
 
 ```sh
 npm start -- "先阅读项目，解释代码结构" --cwd /绝对路径/目标项目
 npm start -- -p "修正 README 中指定的错字" --cwd /绝对路径/目标项目
 npm start -- -c --cwd /绝对路径/目标项目
+npm start -- --direct --cwd /绝对路径/目标项目
+npm start -- --plain --cwd /绝对路径/目标项目
 npm start -- --cwd /绝对路径/目标项目 --allow-shell
 npm start -- --version
 ```
 
-`-p` 单次输出；`-c` 恢复会话；`--session` 指定会话文件。默认会话保存在 `~/.pi-superagent/sessions/`，包含代码和对话，应按私密数据保管。交互命令：`/help`、`/new`、`/status`、`/shell on|off`、`/exit`；Ctrl+C 中断当前轮。
+`-p` 单次纯文本输出；`--plain` 使用普通文本界面。TUI 的 `-c` 恢复 `--state` 中的工单线程和持久化状态；纯文本的 `-c` / `--session` 使用 JSON 会话，位于 `~/.pi-superagent/sessions/`。数据包含代码和对话，应按私密数据保管。
+
+TUI 命令：`/help`、`/status`、`/tickets`、`/ticket <id>`、`/new`、`/pause`、`/resume`、`/stop <id>`、`/retry <id>`、`/mode coding|tickets`、`/shell on|off`、`/exit`。忙碌时 Ctrl+C 中断执行而不撤销工单授权，可 `/resume` 继续；需要永久撤销时用 `/stop`。Shell 开启和模式切换仅在安全空闲状态进行。
 
 从任意目标项目目录也可启动，保持当前工作目录并读取安装仓库配置：
 
@@ -118,20 +126,20 @@ Source → Trigger → Thread → Eval → Decision
 
 ## 原型思路核对
 
-核对结果：**保留并复用了原型完整领域核心，但不能声称默认 coding CLI 已接入原型全部运行机制。** `src/core/` 和 `src/policy.ts` 与原型逐文件一致，新增 coding 模式不会删改原有 `run/serve` 链路。
+核对结果：**保留并复用了原型完整领域核心，默认工单 TUI 真实使用它，但仍不是原型全部外围机制的完整迁移。** `src/core/` 和 `src/policy.ts` 与原型逐文件一致，新增 coding 模式不会删改原有 `run/serve` 链路。
 
-| 原型设计 | `run/serve` | 默认 coding CLI |
+| 原型设计 | 工单 TUI 与 `run/serve` | 直接 coding / `--plain` |
 | --- | --- | --- |
-| Source、Trigger、Thread、Eval、Decision、Mandate、Ticket、Assignment | 复用完整领域模型 | 直接终端会话，不经这些领域对象 |
-| gate、逐规则评估、observe/auto、Mandate revalidate | 已接入 | 当前操作者直接授权，不进行团队准入 |
-| Subscription 扇出、Correlation 仅上下文、handback | 已接入 core 与 worker 工具 | 多轮消息上下文，不做跨来源订阅 |
-| SQLite 事务、Effects/Outbox、幂等接收及平台回写 | 已接入 | 私密 JSON 会话与原子保存，不使用 effect/outbox |
-| 工单恢复、Assignment 与 Session 分离、并发和暂停 | 已接入并有回归测试 | 单 Agent，支持会话恢复与 Ctrl+C |
-| 完整主 Session 路由工具、版本化提示词与 skills | DSH 兼容代码保留，pi 宿主尚未全接 | 仅 coding 工具与固定提示词 |
-| DSH 后台 job/subagent、完整 React 设置面板 | 保留原型实现，pi 模式尚未迁移 | 未接入 |
-| GitHub、飞书 | pi 适配器接入；飞书范围小于原型 | 不自动监听平台 |
+| Source、Trigger、Thread、Eval、Decision、Mandate、Ticket、Assignment | 真实复用领域模型，TUI 展示评估与执行状态 | 不经领域对象 |
+| gate、逐规则评估、observe/auto、Mandate revalidate | 真实执行与状态展示，显式配置不扩权 | 当前操作者直接授权 |
+| Subscription 扇出、Correlation 仅上下文、handback | 真实 core / worker 工具与多轮线程输入 | 普通上下文 |
+| SQLite、Effects/Outbox、幂等接收及平台回写 | 持久化队列与回写计数 | coding 会话保存 |
+| 工单恢复、Assignment 与 Session 分离、并发和暂停 | 状态详情与暂停、恢复、重试、停止操作 | 单 Agent / Ctrl+C |
+| 完整主 Session 路由工具、版本化提示词与 skills | DSH 兼容代码保留，pi 宿主尚未全接 | 未接入 |
+| DSH 后台 job/subagent、完整 React 设置面板 | 保留原型实现，TUI 不冒称启用 | 未接入 |
+| GitHub、飞书 | `serve` 的平台适配器；TUI 不自动启动监听 | 不自动监听平台 |
 
-两种模式共享 pi 模型层与受目录边界约束的 coding 工具。默认交互模式的目的是安装后即用；原型领域治理主链路仍由 `run/serve` 提供，但 Outbox 永久不可达处理、完整主 Session 路由工具、提示词版本/skills、后台 jobs/subagents、完整 React 设置面板以及飞书历史轮询仍未全部迁移。完整领域源码保留不等于完整外围功能已经迁移，这些缺口没有被标记为实现完成。
+两种模式共享 pi 模型层与受目录边界约束的 coding 工具。默认工单 TUI 已接入原型领域治理主链路，直接 coding 则明确绕开领域评估；Outbox 永久不可达处理、完整主 Session 路由工具、提示词版本/skills、后台 jobs/subagents、完整 React 设置面板以及飞书历史轮询仍未全部迁移。完整领域源码保留不等于完整外围功能已经迁移，这些缺口没有被标记为实现完成。
 
 ## 上游设计文档
 
