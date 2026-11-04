@@ -1,6 +1,13 @@
 import type { AgentEvent } from '@earendil-works/pi-agent-core'
 import type { DomainEvent, Ticket } from '../core/index.ts'
 
+/** One earlier exchange, replayed when a session resumes. */
+export interface TranscriptEntry {
+  key: string
+  role: 'user' | 'assistant' | 'note'
+  text: string
+}
+
 export interface TerminalSnapshot {
   mode: 'tickets' | 'coding'
   cwd: string
@@ -14,6 +21,8 @@ export interface TerminalSnapshot {
   running: number
   attention: number
   health: Record<string, { state: string; detail: string }>
+  /** Conversation so far, oldest first; only what a person or the agent actually said. */
+  history: TranscriptEntry[]
 }
 
 export interface TerminalController {

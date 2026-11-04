@@ -35,6 +35,8 @@ export class PiRuntime {
   private readonly runtimeHealth = this.board.claim('runtime')
   private readonly sourceHealth = this.board.claim('sources')
   private readonly factory: import('./types.ts').AgentFactory
+  /** The SourceScope the Policy judges admissibility with; the terminal asks the same gate before spending a model call. */
+  readonly sourceScope: SourceScope
 
   constructor(readonly config: RuntimeConfig) {
     config.stateDir = resolve(config.stateDir)
@@ -45,7 +47,7 @@ export class PiRuntime {
     catch (error) { this.release(); throw error }
     this.factory = config.agentFactory ?? createPiAgent
     this.effects = new Effects(this.store, this.board)
-    const scope: SourceScope = { scope: input => {
+    this.sourceScope = { scope: (input: Parameters<SourceScope['scope']>[0]) => {
       if (this.store.settings().sources[input.source]?.enabled === false) return { listened: false, reason: 'source_disabled' }
       return input.source === 'local' || this.sources.has(input.source)
         ? { listened: true, observed: true, row: 'default' } : { listened: false, reason: 'source_disabled' }
@@ -53,7 +55,7 @@ export class PiRuntime {
     this.executor = new PiExecutor({ store: this.store, effects: this.effects, engine: () => this.engine,
       config, agentFactory: this.factory, paused: () => this.closing || this.store.settings().paused })
     this.engine = new Engine({
-      repo: this.store, scope, policy: () => settingsPolicy(this.store.settings(), scope),
+      repo: this.store, scope: this.sourceScope, policy: () => settingsPolicy(this.store.settings(), this.sourceScope),
       assessor: {
         request: candidate => this.effects.enqueue('assessment', candidate.evalId, { triggerId: candidate.triggers[0]!.id }),
         release: id => this.effects.cancel('assessment', id),

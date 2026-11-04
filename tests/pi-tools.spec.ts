@@ -234,7 +234,7 @@ describe('凭据防泄露', () => {
     }
     tools = codingTools(cwd, { allowShell: true })
     const output = await call('bash', { command: `printf '%s' '${token}'; printf '%s' '${key}' >&2; exit 3` })
-    expect(text(output)).toBe('[凭据已隐藏][凭据已隐藏]')
+    expect(text(output)).toBe('[凭据已隐藏][凭据已隐藏]\n[退出码 3]')
     expect(output.isError).toBe(true)
     expect(output.details).toMatchObject({ exitCode: 3 })
   })

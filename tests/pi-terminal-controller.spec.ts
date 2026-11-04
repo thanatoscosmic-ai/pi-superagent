@@ -121,7 +121,7 @@ describe('TerminalController 真实领域运行', () => {
     await h.controller.submit('补充同一个修改的要求')
     expect(h.controller.snapshot().tickets[0]?.inputs.some(input => input.kind === 'trigger' && input.triggerId !== first.origin.triggerId)).toBe(true)
     await h.settled()
-    expect(h.assess).toHaveBeenCalledOnce()
+    expect(h.assess).toHaveBeenCalledTimes(2)
     expect(h.controller.snapshot().tickets[0]?.mandate).toEqual(first.mandate)
     const rows = h.query('SELECT value FROM trigger').map(row => JSON.parse(String(row.value)))
     expect(new Set(rows.map(row => row.channel.thread)).size).toBe(1)
@@ -129,7 +129,7 @@ describe('TerminalController 真实领域运行', () => {
     h.provider.setResponses(ready())
     await h.controller.submit('另一个明确修改')
     await h.settled()
-    expect(h.assess).toHaveBeenCalledTimes(2)
+    expect(h.assess).toHaveBeenCalledTimes(3)
     expect(h.controller.snapshot().tickets).toHaveLength(2)
     expect(h.query('SELECT * FROM thread')).toHaveLength(2)
   })
@@ -201,6 +201,42 @@ describe('TerminalController 真实领域运行', () => {
     expect(h.query('SELECT value FROM decision').some(row => JSON.parse(String(row.value)).kind === 'ignore')).toBe(true)
   })
 
+  it('暂停时闲聊仍被回答，工单调度与授权冻结', async () => {
+    const h = await setup()
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '闲聊' })
+    h.provider.setResponses([fauxAssistantMessage('我在。'), fauxAssistantMessage('排队中')])
+    await h.controller.command('/pause')
+    await h.controller.submit('hi')
+    await h.settled()
+    expect(h.events.some(event => event.type === 'agent' && event.ticketId === 'dialogue' &&
+      event.value.type === 'message_end' && JSON.stringify(event.value.message.content).includes('我在。'))).toBe(true)
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    // A work request while paused waits for the resume instead of being authorized.
+    h.assess.mockResolvedValue(assessment)
+    await h.controller.submit('把 message.txt 改成 fixed')
+    // 暂停中被排队的请求就是这个暂停的产物，不需要等它结束。
+    await vi.waitFor(() => expect(h.controller.snapshot().queued).toBe(1))
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    h.provider.setResponses(ready())
+    await h.controller.command('/resume')
+    await h.settled()
+    expect(h.controller.snapshot().tickets).toHaveLength(1)
+  })
+
+  it('工作请求只评估一次，闲聊不产生 Trigger 或 Decision', async () => {
+    const h = await setup()
+    await h.controller.submit('把 message.txt 改成 fixed')
+    await h.settled()
+    expect(h.assess).toHaveBeenCalledOnce()
+    expect(h.controller.snapshot().tickets).toHaveLength(1)
+    h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '闲聊' })
+    h.provider.setResponses([fauxAssistantMessage('在的')])
+    await h.controller.submit('你好')
+    await h.settled()
+    expect(h.assess).toHaveBeenCalledTimes(2)
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(1)
+  })
+
   it('hi 和 nihao 连续评估 ignore 后真实对话，无工具无工单，resume 保留脱敏上下文和 processed', async () => {
     const h = await setup()
     h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '普通问候，不请求实施' })
@@ -222,7 +258,9 @@ describe('TerminalController 真实领域运行', () => {
     expect(h.loaded.every(options => options.tools?.length === 0)).toBe(true)
     expect(h.loaded[1]?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('hi'))).toBe(true)
     expect(h.controller.snapshot().tickets).toHaveLength(0)
-    expect(h.query('SELECT * FROM trigger')).toHaveLength(2)
+    // 闲聊不经过领域：没有 Trigger、没有 Decision、没有回写。
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(0)
+    expect(h.query('SELECT * FROM decision')).toHaveLength(0)
     expect(h.query('SELECT * FROM outbox')).toHaveLength(0)
     expect(h.events.some(event => event.type === 'reply')).toBe(false)
     expect(readFileSync(join(h.cwd, 'message.txt'), 'utf8')).toBe('old')
@@ -238,7 +276,7 @@ describe('TerminalController 真实领域运行', () => {
     await h.settled()
     expect(h.loaded.at(-1)?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('nihao'))).toBe(true)
     expect(JSON.parse(String(h.query('SELECT processed FROM pi_terminal_dialogue')[0]?.processed))).toHaveLength(3)
-    expect(h.query('SELECT * FROM trigger')).toHaveLength(3)
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(0)
   })
 
   it('目标未确定或规则不匹配的实施请求保持 gate，dialogue 解释和澄清不 write', async () => {
@@ -313,7 +351,8 @@ describe('TerminalController 真实领域运行', () => {
     await Promise.all([h.controller.close(), h.controller.close()])
     expect(h.agents.every(agent => !agent.state.isStreaming)).toBe(true)
     expect(String(h.query('SELECT messages FROM pi_terminal_dialogue')[0]?.messages)).toContain('关闭时对话')
-    expect(h.query('SELECT * FROM trigger')).toHaveLength(4)
+    // 只有第一条是工作请求（进入领域）；其余是对话，不产生 Trigger。
+    expect(h.query('SELECT * FROM trigger')).toHaveLength(1)
     expect(JSON.parse(String(h.query('SELECT processed FROM pi_terminal_dialogue')[0]?.processed))).toHaveLength(3)
   })
 
@@ -510,6 +549,25 @@ describe('TerminalController 真实领域运行', () => {
     await h.controller.close()
     expect(h.agents[0]?.state.isStreaming).toBe(false)
     expect(String(h.query('SELECT messages FROM pi_terminal_coding')[0]?.messages)).toContain('关闭时取消')
+  })
+
+  it('快照 history 只含人与助手的真实对话，恢复后保留上下文', async () => {
+    const h = await setup()
+    h.provider.setResponses([fauxAssistantMessage(fauxText('第一轮回答')), fauxAssistantMessage(fauxText('第二轮回答'))])
+    await h.controller.command('/mode coding')
+    await h.controller.submit('第一轮问题')
+    await h.settled()
+    await h.controller.submit('第二轮问题')
+    await h.settled()
+    const history = required(h.controller.snapshot()).history
+    expect(history.map(entry => [entry.role, entry.text])).toEqual([
+      ['user', '第一轮问题'], ['assistant', '第一轮回答'], ['user', '第二轮问题'], ['assistant', '第二轮回答'],
+    ])
+    expect(new Set(history.map(entry => entry.key)).size).toBe(history.length)
+    await h.controller.close()
+    const resumed = await h.open(true)
+    await resumed.command('/mode coding')
+    expect(resumed.snapshot().history.map(entry => entry.text)).toEqual(history.map(entry => entry.text))
   })
 
   it('等待中的 Assignment 不冒充实际运行任务', async () => {

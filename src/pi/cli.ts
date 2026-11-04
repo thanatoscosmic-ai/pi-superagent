@@ -11,6 +11,19 @@ import { PiRuntime } from './runtime.ts'
 import { GitHubSource, FeishuSource } from './sources.ts'
 import { startServer } from './server.ts'
 
+const readVersion = (): string => {
+  // Resolved from source (src/pi/*.ts) and from the bundled output (dist/*.js).
+  for (const path of ['../../package.json', '../package.json']) {
+    try {
+      const data = JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as { name?: string; version?: string }
+      if (data.name === 'pi-superagent' && data.version) return data.version
+    } catch {}
+  }
+  return '0.0.0'
+}
+
+const version = readVersion()
+
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   state: { type: 'string', default: '.pi-superagent' },
   cwd: { type: 'string', default: process.cwd() },
@@ -33,7 +46,7 @@ async function main(): Promise<void> {
   const first = positionals[0]
   const commands = ['run', 'serve', 'status', 'stop', 'retry', 'chat', 'help']
   const command = first && commands.includes(first) ? first : 'chat'
-  if (values.version) { console.log('pi-superagent 0.2.0'); return }
+  if (values.version) { console.log(`pi-superagent ${version}`); return }
   if (values.help || command === 'help') {
     console.log('pi-superagent ["任务"]：pi 风格交互式 coding CLI 工单 TUI（真实终端）\n--direct 当前目录编码；--plain 纯文本；-p 单次输出\n评估/授权/工单/执行/队列/待人工：实时状态\npi-superagent -p "任务"：单次输出；-c：恢复当前目录会话\npi-superagent run "任务" | serve | status | stop <ticket> | retry <ticket>\n--cwd <目录> --session <会话JSON> --allow-shell（非沙箱）\n工单模式：--state <状态目录> --config <配置JSON>\nserve: --repository owner/repo --bot 用户名 --allowed 用户1,用户2\n模型：OPENAI_BASE_URL、OPENAI_MODEL、OPENAI_API_KEY；面板：PI_SUPERAGENT_TOKEN')
     return

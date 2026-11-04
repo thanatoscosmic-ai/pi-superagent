@@ -352,9 +352,11 @@ export function codingTools(cwd: string, options: CodingToolsOptions = {}): Agen
             cleanup()
             kill()
             if (failure) return reject(failure)
-            const text = Buffer.concat(chunks).toString('utf8')
+            const text = Buffer.concat(chunks).toString('utf8').replace(/\n+$/, '')
+            // 失败时明确给出退出码，避免「命令执行完成」却是一张红色卡片。
+            const body = text || (code === 0 ? '命令执行完成，无输出。' : `命令以退出码 ${code} 结束，无输出。`)
             resolveResult({
-              ...result(`${text}${truncated ? '\n输出已截断。' : ''}` || '命令执行完成。', { exitCode: code, signal: exitSignal, truncated, sandbox: false }),
+              ...result(`${body}${truncated ? '\n输出已截断。' : ''}${code === 0 ? '' : `\n[退出码 ${code}${exitSignal ? `，信号 ${exitSignal}` : ''}]`}`, { exitCode: code, signal: exitSignal, truncated, sandbox: false }),
               isError: code !== 0,
             })
           })

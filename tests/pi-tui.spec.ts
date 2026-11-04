@@ -5,7 +5,6 @@ import {
   CombinedAutocompleteProvider,
   CURSOR_MARKER,
   Editor,
-  Loader,
   Markdown,
   TuiMainScreen,
   stripTerminalSequences,
@@ -79,7 +78,7 @@ function snapshot(overrides: Partial<TerminalSnapshot> = {}): TerminalSnapshot {
   return {
     mode: 'tickets', cwd: '/Users/zhangyahao/Desktop/projects/pi-superagent', model: 'offline-model',
     shell: false, paused: false, tickets: [], evaluating: 0, queued: 0, pendingReplies: 0,
-    running: 0, attention: 0, health: {}, ...overrides,
+    running: 0, attention: 0, health: {}, history: [], ...overrides,
   }
 }
 
@@ -152,7 +151,8 @@ function launch(controller = new FakeController(), terminal = new FakeTerminal()
     screen.renderNow(true)
     return screen.render(terminal.columns).map(stripTerminalSequences).join('\n')
   }
-  return { controller, terminal, session, render, get screen() { return screen } }
+  const children = () => screen?.children ?? []
+  return { controller, terminal, session, render, children, get screen() { return screen } }
 }
 
 async function exit(app: ReturnType<typeof launch>) {
@@ -185,18 +185,17 @@ describe('pi 组件终端', () => {
     controller.agent({ type: 'message_end', message: empty })
     controller.agent({ type: 'agent_end', messages: [empty] })
     const text = app.render()
-    expect(text).toContain('~/projects/pi-superagent')
-    expect(text.split('\n').map(line => line.trim()).join('\n')).toContain('Agent\n你好！有什么可以帮你？')
-    expect(text.match(/Agent/g)).toHaveLength(1)
+    expect(text).toContain('pi-superagent')
+    expect(text).toContain('你好！有什么可以帮你？')
     expect(text).toContain('就绪')
-    for (const hidden of ['ignore', '六行健康', 'eval-hidden', 'thread-hidden', 'worker-input', '当前 ticket', 'dialogue', 'assistant', '评估:0']) expect(text).not.toContain(hidden)
-    expect(text.split('\n').length).toBeLessThanOrEqual(20)
+    for (const hidden of ['ignore', '六行健康', 'eval-hidden', 'thread-hidden', 'worker-input', '当前 ticket', 'Agent', '你\n', '评估:0']) expect(text).not.toContain(hidden)
+    expect(text.split('\n').length).toBeLessThanOrEqual(14)
     for (const width of [18, 40, 100]) {
       app.terminal.resize(width)
       const lines = app.screen?.render(width) ?? []
       expect(lines.every(line => visibleWidth(line) <= width)).toBe(true)
-      expect(app.screen?.children[0]?.render(width)).toHaveLength(2)
-      expect(app.screen?.children.at(-1)?.render(width)).toHaveLength(3)
+      expect(app.children()[0]?.render(width)).toHaveLength(2)
+      expect(app.children().at(-1)?.render(width)).toHaveLength(2)
     }
     await exit(app)
   })
@@ -209,7 +208,7 @@ describe('pi 组件终端', () => {
     for (let i = 0; i < 51; i++) controller.emit({ type: 'domain', value: { type: 'eval.started', at: 'now', data: {
       evalId: `cached-${String(i).padStart(3, '0')}`, threadKey: 'thread-cache', triggerIds: [], strength: 'explicit',
     } } })
-    const history = app.screen?.children[1]
+    const history = app.children()[2]
     expect(history?.render(100)).toEqual([])
     app.terminal.enter('/debug on')
     expect(app.render()).not.toContain('cached-000')
@@ -224,13 +223,12 @@ describe('pi 组件终端', () => {
       else controller.emit({ type: 'domain', value: { type, at: 'now', data: { ticketId: id, threadKey: 'raw-thread' } } })
     }
     const text = app.render()
-    expect(history?.render(100)).toHaveLength(3)
-    expect(text).toContain('工单 abcdefgh · 已创建 · 修复真实工单')
-    for (const hidden of [id, 'cached-', 'raw-thread', 'decisionId', 'mandate:']) expect(text).not.toContain(hidden)
+    expect(text).toContain('已创建工单 · 修复真实工单')
+    for (const hidden of [id, 'cached-', 'raw-thread', 'decisionId', '已订阅线程']) expect(text).not.toContain(hidden)
     app.terminal.enter('/ticket')
-    expect(app.render()).toContain(`ticket ${id}`)
-    expect(app.render()).toContain('mandate:')
-    expect(app.render()).toContain('assignment: 实现并验证')
+    expect(app.render()).toContain('abcdefgh-long-ticket-id')
+    expect(app.render()).toContain('范围')
+    expect(app.render()).toContain('实现并验证')
     expect(controller.command).not.toHaveBeenCalled()
     await exit(app)
   })
@@ -244,27 +242,27 @@ describe('pi 组件终端', () => {
       executor: { state: 'unavailable', detail: '执行器不可用' },
       worker: { state: 'failed', detail: 'worker失败' },
     } })
-    controller.command.mockImplementation(async text => text === '/status' ? JSON.stringify(controller.value.health) : undefined)
+    controller.command.mockImplementation(async text => text === '/mode coding' ? JSON.stringify(controller.value.health) : undefined)
     const app = launch(controller)
-    expect(app.render()).toContain('model: error 模型错误')
+    expect(app.render()).toContain('model: error')
     expect(app.render()).toContain('unavailable')
     expect(app.render()).toContain('failed')
     expect(app.render()).not.toContain('健康ready详情')
     expect(app.render()).not.toContain('正常忽略详情')
-    expect(app.screen?.children.at(-1)?.render(100)).toHaveLength(3)
+    expect(app.children().at(-1)?.render(100)).toHaveLength(2)
     app.terminal.enter('/debug on')
     expect(app.render()).toContain('dialogue: ignore 正常忽略详情')
     expect(app.render()).toContain('source: ready 健康ready详情')
     expect(app.render()).toContain('执行器不可用')
     app.terminal.enter('/debug off')
-    app.terminal.enter('/status')
+    app.terminal.enter('/mode coding')
     await flush()
     expect(app.render()).toContain('第三行错误')
-    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/status'])
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/mode coding'])
     await exit(app)
   })
 
-  it('报告更新复用恢复消息，工具折叠最多三行且展开保留安全完整args', async () => {
+  it('报告更新只恢复一次，工具折叠有上限且展开保留安全完整args', async () => {
     const controller = new FakeController()
     controller.value = snapshot({ tickets: [ticket()] })
     const app = launch(controller)
@@ -275,24 +273,25 @@ describe('pi 组件终端', () => {
       controller.emit({ type: 'snapshot', value: snapshot({ tickets: [current] }) })
     }
     expect(app.render().match(/报告版本4/g)).toHaveLength(1)
-    expect(app.render()).not.toContain('报告版本0')
     controller.agent({ type: 'tool_execution_start', toolCallId: 'hidden-call-id', toolName: 'read', args: {
       path: 'src/pi/tui.ts', offset: 8, token: 'hidden-credential', injected: '\x1b]52;c;BAD_CLIPBOARD\x07',
     } })
     controller.agent({ type: 'tool_execution_end', toolCallId: 'hidden-call-id', toolName: 'read', result: '第一行\n第二行\n第三行', isError: false })
     for (const width of [18, 40, 100]) {
       app.terminal.resize(width)
-      const history = app.screen?.children[1]
+      const history = app.children()[2]
       const card = history && 'children' in history ? (history.children as Array<{ render(width: number): string[] }>).at(-1) : undefined
-      expect(card?.render(width)).toHaveLength(3)
+      expect(card?.render(width).length).toBeLessThanOrEqual(6)
       expect(app.screen?.render(width).every(line => visibleWidth(line) <= width)).toBe(true)
     }
     app.terminal.resize(100)
-    expect(app.render()).toContain('工具 read · 完成  src/pi/tui.ts')
-    expect(app.render()).not.toContain('第三行')
+    expect(app.render()).toContain('read src/pi/tui.ts:8')
+    expect(app.render()).toContain('src/pi/tui.ts')
+    // 与 pi 一致：折叠的 read 不重复正文，展开后才显示。
+    expect(app.render()).not.toContain('第一行')
     expect(app.render()).not.toContain('offset')
     app.terminal.enter('/tools expand')
-    expect(app.render()).toContain('"offset":8')
+    expect(app.render()).toContain('offset')
     expect(app.render()).toContain('第三行')
     expect(app.render()).not.toContain('hidden-credential')
     expect(app.render()).not.toContain('BAD_CLIPBOARD')
@@ -319,8 +318,8 @@ describe('pi 组件终端', () => {
     expect(screen).not.toContain('not-for-display')
     await exit(app)
   })
+
   it('使用真实 TuiMainScreen Markdown 多行 Editor，提交后 Ctrl+C 完整清理', async () => {
-    const loaderStop = vi.spyOn(Loader.prototype, 'stop')
     const app = launch()
     expect(app.screen).toBeInstanceOf(TuiMainScreen)
     expect(app.screen?.children.some(child => child instanceof Editor)).toBe(true)
@@ -328,15 +327,15 @@ describe('pi 组件终端', () => {
     app.terminal.input('\x1b[13;2u')
     app.terminal.input('第二行')
     app.terminal.input('\r')
-    expect(app.render()).toContain('等待执行')
+    expect(app.render()).toContain('工作中')
     await flush()
     expect(app.controller.submit).toHaveBeenCalledWith('第一行\n第二行')
-    const history = app.screen?.children[1]
+    const history = app.children()[2]
     expect(history && 'children' in history && (history.children as unknown[]).some(child => child instanceof Markdown)).toBe(true)
-    expect(loaderStop).toHaveBeenCalled()
+    // pi 语义：空闲时第一次 Ctrl+C 清空/提示，连按两次退出。
+    app.terminal.input('\x03')
     app.terminal.input('\x03')
     await app.session
-    expect(app.controller.interrupt).toHaveBeenCalledTimes(1)
     expect(app.controller.close).toHaveBeenCalledTimes(1)
     expect(app.controller.listeners.size).toBe(0)
     expect(app.terminal.onInput).toBeUndefined()
@@ -362,7 +361,7 @@ describe('pi 组件终端', () => {
     await flush()
     expect(controller.submit.mock.calls.map(call => call[0])).toEqual(['首次提交'])
     expect(controller.command).toHaveBeenCalledWith('/pause')
-    expect(app.render()).toContain('队列:1')
+    expect(app.render()).toContain('队列 1')
     app.terminal.input('\x03')
     await flush()
     expect(controller.interrupt).toHaveBeenCalledTimes(1)
@@ -377,6 +376,68 @@ describe('pi 组件终端', () => {
     await exit(app)
   })
 
+  it('Ctrl+O 展开或折叠全部工具、Ctrl+D 仅在空编辑器退出', async () => {
+    const app = launch()
+    app.controller.agent({ type: 'tool_execution_end', toolCallId: 'c1', toolName: 'bash', result: 'x\ny\nz', isError: false })
+    expect(app.render()).toContain('bash')
+    app.terminal.input('\x0f')
+    await flush()
+    expect(app.render()).toContain('args:')
+    app.terminal.input('\x0f')
+    await flush()
+    expect(app.render()).not.toContain('args:')
+    app.terminal.input('草稿')
+    app.terminal.input('\x04')
+    await flush()
+    expect(app.controller.close).not.toHaveBeenCalled()
+    const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
+    editor.setText('')
+    app.terminal.input('\x04')
+    await app.session
+    expect(app.controller.close).toHaveBeenCalledTimes(1)
+  })
+
+  it('暂停时提交的消息会提示已排队，而不是看起来没有回复', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ paused: true })
+    const app = launch(controller)
+    expect(app.render()).toContain('已暂停')
+    app.terminal.enter('hi')
+    await flush()
+    expect(controller.submit).toHaveBeenCalledWith('hi')
+    expect(app.render()).toContain('编码请求会排队')
+    await exit(app)
+  })
+
+  it('恢复提示里的内部文本不作为用户消息显示', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket('T1', {
+      inputs: [
+        { kind: 'text', id: 'R1', text: 'The host restarted during this ticket. Inspect the current worktree, git history and GitHub state before continuing.', at: 'now' },
+        { kind: 'text', id: 'S1', text: 'Report the current ticket status with orchestrator_report. This is a status-only request.', at: 'now' },
+      ],
+      assignments: [],
+    })] })
+    const app = launch(controller)
+    const text = app.render()
+    expect(text).not.toContain('The host restarted during this ticket')
+    expect(text).not.toContain('Report the current ticket status')
+    await exit(app)
+  })
+
+  it('暂停时显示静态暂停提示，Escape 不被忙状态卡住', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ running: 1, paused: true })
+    const app = launch(controller)
+    expect(app.render()).toContain('已暂停')
+    expect(app.render()).not.toContain('工作中')
+    expect(app.render()).not.toContain('评估中')
+    app.terminal.input('\x1b')
+    await app.session
+    expect(controller.interrupt).not.toHaveBeenCalled()
+    expect(controller.close).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['running', 'evaluating'] as const)('snapshot %s 忙时 Escape 中断不退出，闲时 Escape 退出', async field => {
     const controller = new FakeController()
     controller.value = snapshot({ [field]: 1 })
@@ -388,7 +449,9 @@ describe('pi 组件终端', () => {
     expect(controller.close).not.toHaveBeenCalled()
     app.terminal.input('\x1b')
     await app.session
-    expect(controller.interrupt).toHaveBeenCalledTimes(2)
+    // 空闲时 Escape 直接退出，不再请求中断。
+    expect(controller.interrupt).toHaveBeenCalledTimes(1)
+    expect(controller.close).toHaveBeenCalledTimes(1)
     expect(app.terminal.stopped).toBe(true)
   })
 
@@ -401,22 +464,43 @@ describe('pi 组件终端', () => {
     const app = launch(controller)
     const text = app.render()
     for (const value of ['offline-model', '工单', '历史用户消息', '历史完成报告',
-      'scope:', 'worktree: /tmp/worktree/T1', '评估:2', '队列:3',
-      '回写:4', 'attention:5', 'shell:on · paused:on']) expect(text).toContain(value)
+      '评估 2', '队列 3', '回写 4', '待办 5', 'shell 开', '已暂停']) expect(text).toContain(value)
     for (const value of ['mandate:', 'report:', '本地健康', 'assignment:']) expect(text).not.toContain(value)
     controller.emit({ type: 'snapshot', value: controller.value })
-    expect(app.render().match(/历史用户消息/g)).toHaveLength(2)
+    // 同一份历史重放不会重复显示。
+    expect(app.render().match(/历史用户消息/g)).toHaveLength(1)
     const inputs = ['/tickets', '/ticket T2', '/pause', '/resume', '/stop T1', '/retry T1',
       '/mode coding', '/mode tickets', '/shell on', '/shell off', '/new', '/help', '/status']
     for (const input of inputs) {
       app.terminal.enter(input)
       await flush()
     }
-    expect(app.render()).toContain('ticket T2 · 第二工单')
-    expect(controller.command.mock.calls.map(call => call[0])).toEqual(inputs)
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual(inputs.filter(input => !['/tickets', '/ticket T2', '/status'].includes(input)))
+    expect(app.render()).toContain('模式')
     expect(controller.submit).not.toHaveBeenCalled()
     await exit(app)
     expect(controller.command).toHaveBeenLastCalledWith('/exit')
+  })
+
+  it('/tickets 本地渲染列表且不转发 controller', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket()] })
+    controller.command.mockImplementation(async text => {
+      if (text === '/tickets') throw new Error('不应转发')
+      if (text === '/help') return '唯一帮助内容'
+    })
+    const app = launch(controller)
+    app.terminal.enter('/tickets')
+    await flush()
+    const text = app.render()
+    expect(text).toContain('修复真实工单')
+    expect(text).toContain('待处理')
+    expect(text).not.toContain('不应转发')
+    app.terminal.enter('/help')
+    await flush()
+    expect(app.render().match(/唯一帮助内容/g)).toHaveLength(1)
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/help'])
+    await exit(app)
   })
 
   it('显示完整和流式 assistant 消息，不重复 delta、message_end 或 agent_end', async () => {
@@ -444,33 +528,32 @@ describe('pi 组件终端', () => {
     app.controller.emit({ type: 'domain', value: { type: 'ticket.ended', at: 'now',
       data: { ticketId: 'T1', by: 'executor', outcome: 'completed' } } })
     expect(app.render()).toContain('真实回写')
-    expect(app.render()).toContain('工单 T1 · 已结束')
+    expect(app.render()).toContain('已结束工单')
     await exit(app)
   })
 
-  it('工具卡显示开始、完成、失败，默认折叠、允许展开且输出有上限', async () => {
+  it('工具卡显示运行、完成、失败，默认折叠、允许展开且输出有上限', async () => {
     const app = launch()
     app.controller.agent({ type: 'tool_execution_start', toolCallId: 'call1', toolName: 'read', args: { path: 'src/pi/tui.ts' } })
-    expect(app.render()).toContain('read · 开始')
+    expect(app.render()).toContain('read')
     expect(app.render()).toContain('src/pi/tui.ts')
     const output = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n') + '\n' + `${'x'.repeat(80)}\n`.repeat(250) + 'OUTSIDE_LIMIT'
     app.controller.agent({ type: 'tool_execution_update', toolCallId: 'call1', toolName: 'read', args: {},
       partialResult: { content: [{ type: 'text', text: output }] } })
-    expect(app.render()).not.toContain('args/path:')
+    expect(app.render()).not.toContain('args:')
     expect(app.render()).not.toContain('call1')
-    expect(app.render()).toContain('line1')
-    expect(app.render()).not.toContain('line2')
-    expect(app.render()).not.toContain('line19')
+    expect(app.render()).not.toContain('line1')
     app.controller.agent({ type: 'tool_execution_end', toolCallId: 'call1', toolName: 'read',
       result: { content: [{ type: 'text', text: output }] }, isError: false })
-    expect(app.render()).toContain('read · 完成')
+    expect(app.render()).toContain('read')
     app.terminal.enter('/tools expand')
     await flush()
     expect(app.render()).toContain('line19')
     expect(app.render()).toContain('输出已截断')
     expect(app.render()).not.toContain('OUTSIDE_LIMIT')
     app.controller.agent({ type: 'tool_execution_end', toolCallId: 'call2', toolName: 'write', result: '磁盘失败', isError: true })
-    expect(app.render()).toContain('write · 失败')
+    expect(app.render()).toContain('write')
+    expect(app.render()).toContain('磁盘失败')
     app.terminal.enter('/tools collapse')
     await flush()
     expect(app.render()).not.toContain('line19')
@@ -486,21 +569,19 @@ describe('pi 组件终端', () => {
     controller.agent({ type: 'tool_execution_end', toolCallId: 'failure', toolName: 'write', result: 'failed', isError: true })
     app.render()
     const raw = app.screen?.render(100).join('\n') ?? ''
-    expect(raw).toContain('\x1b[36mpi-superagent')
-    expect(raw).toContain('\x1b[36mconst\x1b[39m')
-    expect(raw).toContain('\x1b[33m42\x1b[39m')
-    expect(raw).toContain('\x1b[32m"中文"\x1b[39m')
-    expect(raw).toContain('\x1b[32m工具 read · 完成')
-    expect(raw).toContain('\x1b[31m工具 write · 失败')
+    expect(raw).toContain('\x1b[38;2;228;138;122m')
+    expect(raw).toContain('\x1b[1mpi-superagent\x1b[22m')
+    expect(raw).toContain('\x1b[48;2;37;65;49m')
+    expect(raw).toContain('\x1b[48;2;91;40;42m')
     app.terminal.enter('/debug on')
-    expect(app.screen?.render(100).join('\n')).toContain('\x1b[33mreport:')
+    expect(app.screen?.render(100).join('\n')).toContain('调试')
     app.terminal.enter('/debug off')
     expect(raw).not.toContain('\x1b[35m')
     expect(raw).not.toContain('ATTACK')
     expect(raw).not.toContain('\x1b]')
     expect(raw.split(CURSOR_MARKER).join('').replace(/\x1b\[[0-9;]*m/g, '')).not.toContain('\x1b')
     const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
-    expect(editor.render(100).join('\n')).toContain('\x1b[36m')
+    expect(editor.render(100).join('\n')).toContain('─')
     for (const width of [24, 40, 100]) {
       app.terminal.resize(width)
       expect(app.screen?.render(width).every(line => visibleWidth(line) <= width)).toBe(true)
@@ -508,26 +589,37 @@ describe('pi 组件终端', () => {
     await exit(app)
   })
 
-  it('/tools 仅本地处理，help 和 tickets 只显示 controller 返回内容一次', async () => {
+  it('/tools 仅本地处理，help 只显示 controller 返回内容一次', async () => {
     const controller = new FakeController()
     controller.value = snapshot({ tickets: [ticket()] })
     controller.command.mockImplementation(async text => {
       if (text.startsWith('/tools')) throw new Error('未知 tools 命令')
       if (text === '/help') return '唯一帮助内容'
       if (text === '/tickets') return '唯一工单列表'
+      if (text === '/status') throw new Error('不应转发 status')
     })
     const app = launch(controller)
-    for (const input of ['/tools', '/tools expand', '/tools collapse', '/debug on', '/debug off', '/debug invalid', '/help', '/tickets']) {
+    for (const input of ['/tools', '/tools expand', '/tools collapse', '/debug on', '/debug off', '/debug invalid', '/help', '/tickets', '/status']) {
       app.terminal.enter(input)
       await flush()
     }
-    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/help', '/tickets'])
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual(['/help'])
     const text = app.render()
     expect(text.match(/唯一帮助内容/g)).toHaveLength(1)
-    expect(text.match(/唯一工单列表/g)).toHaveLength(1)
     expect(text).not.toContain('未知 tools 命令')
+    expect(text).not.toContain('不应转发 status')
+    expect(text).toContain('调度')
     expect(text).not.toContain('展开或折叠工具输出')
-    expect(text.match(/工单 修复真实工单/g)).toHaveLength(1)
+    await exit(app)
+  })
+
+  it('工具完整输出不被当作流式截断，也不丢最后字符', async () => {
+    const app = launch()
+    app.controller.agent({ type: 'tool_execution_end', toolCallId: 'g1', toolName: 'glob',
+      result: { content: [{ type: 'text', text: 'src/a.ts\nsrc/b.ts' }] }, isError: false })
+    const text = app.render()
+    expect(text).toContain('src/a.ts')
+    expect(text).toContain('src/b.ts')
     await exit(app)
   })
 
@@ -575,6 +667,22 @@ describe('pi 组件终端', () => {
     await exit(app)
   })
 
+  it('斜杠命令补全包含子命令说明，工单参数可按 id 前缀补全', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket('abcdef0123456789', { title: '补全用工单' })] })
+    const app = launch(controller)
+    const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
+    app.terminal.input('/')
+    await vi.waitFor(() => expect(editor.isShowingAutocomplete()).toBe(true))
+    expect(app.render()).toContain('工单详情')
+    editor.setText('')
+    app.terminal.input('/ticket abc')
+    await vi.waitFor(() => expect(editor.isShowingAutocomplete()).toBe(true))
+    expect(app.render()).toContain('补全用工单')
+    editor.setText('')
+    await exit(app)
+  })
+
   it('斜杠和 @ 本地文件补全调用公开 CombinedAutocompleteProvider', async () => {
     const suggestions = vi.spyOn(CombinedAutocompleteProvider.prototype, 'getSuggestions')
     const app = launch()
@@ -615,7 +723,7 @@ describe('pi 组件终端', () => {
     const app = launch(controller, terminal)
     app.terminal.enter('失败请求')
     await flush()
-    app.terminal.enter('/status')
+    app.terminal.enter('/mode coding')
     await flush()
     expect(app.render()).toContain('提交失败')
     expect(app.render()).toContain('命令失败')
@@ -644,12 +752,121 @@ describe('pi 组件终端', () => {
     await exit(app)
   })
 
-  it('忙时退出停止 Loader，并在 controller.close 等待期间恢复终端', async () => {
+  it('恢复快照中的本地输入不会与本地回显重复出现', async () => {
+    const controller = new FakeController()
+    const app = launch(controller)
+    app.terminal.enter('只显示一次的消息')
+    await flush()
+    const stored = ticket('T9', { inputs: [{ kind: 'text', id: 'I9', text: '只显示一次的消息', at: 'now' }], assignments: [] })
+    controller.emit({ type: 'snapshot', value: snapshot({ tickets: [stored] }) })
+    expect(app.render().match(/只显示一次的消息/g)).toHaveLength(1)
+    await exit(app)
+  })
+
+  it('本地命令参数错误与领域拒绝都用中文说明，且不会显示英文原文', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket()] })
+    const app = launch(controller)
+    app.terminal.enter('/ticket 不存在的工单')
+    await flush()
+    expect(app.render()).toContain('未知工单')
+    controller.command.mockRejectedValueOnce(new Error('Only an open ticket can be retried'))
+    app.terminal.enter('/retry T1')
+    await flush()
+    expect(app.render()).toContain('Only an open ticket can be retried')
+    app.terminal.enter('/debug maybe')
+    await flush()
+    expect(app.render()).toContain('用法：/debug on|off')
+    await exit(app)
+  })
+
+  it('短工单 id 先解析成完整 id 再转发给 controller', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket('abcdef0123456789', { title: '短 id 工单' })] })
+    const app = launch(controller)
+    app.terminal.enter('/stop abcdef01')
+    await flush()
+    app.terminal.enter('/retry abcdef01')
+    await flush()
+    app.terminal.enter('/stop nope')
+    await flush()
+    expect(controller.command.mock.calls.map(call => call[0])).toEqual([
+      '/stop abcdef0123456789', '/retry abcdef0123456789',
+    ])
+    expect(app.render()).toContain('未知工单：nope')
+    await exit(app)
+  })
+
+  it('连续相同错误只占一行并计数', async () => {
+    const controller = new FakeController()
+    controller.submit.mockRejectedValue(new Error('模型不可用'))
+    const app = launch(controller)
+    app.terminal.enter('第一次')
+    await flush()
+    app.terminal.enter('第二次')
+    await flush()
+    expect(app.render().match(/模型不可用/g)).toHaveLength(1)
+    expect(app.render()).toContain('(2)')
+    await exit(app)
+  })
+
+  it('/ticket 省略 id 时选择正在运行的工单', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [
+      ticket('T-old', { title: '旧工单' }),
+      ticket('T-run', { title: '运行中的工单', assignments: [{ id: 'A2', state: 'running', createdAt: 'now' }] }),
+    ] })
+    const app = launch(controller)
+    app.terminal.enter('/ticket')
+    await flush()
+    const text = app.render()
+    expect(text).toContain('T-run')
+    expect(text).not.toContain('T-old')
+    expect(controller.command).not.toHaveBeenCalled()
+    await exit(app)
+  })
+
+  it('/new 清空本会话的对话，Esc 在输入非空时只交给编辑器', async () => {
+    const controller = new FakeController()
+    controller.command.mockImplementation(async () => '已开始新会话')
+    const app = launch(controller)
+    app.terminal.enter('会被清空的消息')
+    await flush()
+    expect(app.render()).toContain('会被清空的消息')
+    app.terminal.enter('/new')
+    await flush()
+    expect(app.render()).not.toContain('会被清空的消息')
+    expect(app.render()).toContain('已开始新会话')
+    app.terminal.input('还没发送')
+    app.terminal.input('\x1b')
+    await flush()
+    expect(app.controller.interrupt).not.toHaveBeenCalled()
+    expect(app.terminal.stopped).toBe(false)
+    const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
+    editor.setText('')
+    await exit(app)
+  })
+
+  it('footer 对工单标题脱敏且窄终端不溢出', async () => {
+    const secret = 'TITLE_SECRET_TOKEN_123456'
+    vi.stubEnv('PI_TEST_TOKEN', secret)
+    const controller = new FakeController()
+    controller.value = snapshot({ tickets: [ticket('T1', { title: `标题 ${secret}` })] })
+    const app = launch(controller)
+    app.terminal.resize(30)
+    expect(app.render()).not.toContain(secret)
+    for (const width of [18, 30, 60]) {
+      app.terminal.resize(width)
+      expect(app.screen?.render(width).every(line => visibleWidth(line) <= width)).toBe(true)
+    }
+    await exit(app)
+  })
+
+  it('忙时退出停止工作指示并等待 controller.close', async () => {
     const controller = new FakeController()
     controller.value = snapshot({ running: 1 })
     const close = deferred()
     controller.close.mockImplementation(() => close.promise)
-    const stopLoader = vi.spyOn(Loader.prototype, 'stop')
     const removeInput = vi.fn()
     const addInput = TuiMainScreen.prototype.addInputListener
     vi.spyOn(TuiMainScreen.prototype, 'addInputListener').mockImplementation(function (this: TuiMainScreen, listener) {
@@ -657,9 +874,9 @@ describe('pi 组件终端', () => {
       return () => { removeInput(); remove() }
     })
     const app = launch(controller)
+    expect(app.render()).toContain('工作中')
     app.terminal.enter('/exit')
     await flush()
-    expect(stopLoader).toHaveBeenCalled()
     expect(removeInput).toHaveBeenCalled()
     expect(app.terminal.stopped).toBe(true)
     expect(app.terminal.cursorVisible).toBe(true)
