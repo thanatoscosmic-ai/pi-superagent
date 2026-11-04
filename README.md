@@ -6,45 +6,51 @@
 
 ## 安装与快速开始
 
-要求 Node.js 24+；从 GitHub 安装还需 Git。GitHub 服务模式需已认证的 `gh`。
-
-```sh
-npm install -g github:thanatoscosmic-ai/pi-superagent
-export OPENAI_BASE_URL=https://api.deepseek.com/v1
-export OPENAI_MODEL=deepseek-chat
-export OPENAI_API_KEY=你的接口凭据
-pi-superagent
-```
-
-在目标项目目录运行 `pi-superagent`，默认进入交互式 coding CLI，直接读写当前项目，**不创建 worktree**。支持多轮对话、模型流式输出、工具执行状态与 Ctrl+C 中断。该模式的权限来自当前终端操作者，不使用 GitHub 团队准入评估；团队自动化仍使用下文 `run/serve` 的领域授权链路。
-
-```sh
-pi-superagent "先阅读项目，解释代码结构"
-pi-superagent -p "修正 README 中指定的错字"
-pi-superagent -c
-pi-superagent --cwd /绝对路径/项目 --allow-shell
-pi-superagent --version
-```
-
-`-p/--print` 单次输出后退出；`-c/--continue` 恢复当前目录最近保存的会话。会话默认位于 `~/.pi-superagent/sessions/`，也可通过 `--session /路径/会话.json` 指定；会话包含代码与对话，按私密数据保管。`/help` 查看交互命令，`/new` 清空上下文，`/status` 查看会话状态，`/shell on|off` 显式切换非沙箱 Shell，`/exit` 退出。
-
-GitHub 安装会自动构建 CLI；npm tarball 已携带构建产物，不要求使用者安装 TypeScript 或 DSH。DSH 包仅作为源码开发与回归测试依赖，不作为 coding CLI 的运行依赖。本项目尚未发布到 npm registry，不要使用裸 `npm install -g pi-superagent` 代替上述 GitHub 地址。
-
-源码开发：
+要求 Node.js 24+、npm 和 Git。GitHub 服务模式还需已认证的 `gh`。克隆仓库后自行安装，不使用全局安装：
 
 ```sh
 git clone https://github.com/thanatoscosmic-ai/pi-superagent.git
 cd pi-superagent
-npm ci
+npm install
+cp .env.example .env
+```
+
+编辑仓库根目录 `.env`，填写 `OPENAI_BASE_URL`、`OPENAI_MODEL` 和 `OPENAI_API_KEY`。`.env` 已被 Git 忽略，不要提交真实凭据。`npm install` 自动构建；禁用安装脚本时手动运行 `npm run build`。
+
+```sh
+npm start -- --cwd /绝对路径/目标项目
+```
+
+启动器自动读取安装仓库的 `.env`，已有环境变量优先；`--cwd` 指定编码目录。使用 `npm start` 未指定 `--cwd` 时，编码目录是 pi-superagent 仓库；直接运行启动脚本时则保持调用者当前目录。默认进入交互式 coding CLI，直接修改目标项目，不创建 worktree。当前终端操作者直接授权，团队自动化仍使用 `run/serve`。
+
+```sh
+npm start -- "先阅读项目，解释代码结构" --cwd /绝对路径/目标项目
+npm start -- -p "修正 README 中指定的错字" --cwd /绝对路径/目标项目
+npm start -- -c --cwd /绝对路径/目标项目
+npm start -- --cwd /绝对路径/目标项目 --allow-shell
+npm start -- --version
+```
+
+`-p` 单次输出；`-c` 恢复会话；`--session` 指定会话文件。默认会话保存在 `~/.pi-superagent/sessions/`，包含代码和对话，应按私密数据保管。交互命令：`/help`、`/new`、`/status`、`/shell on|off`、`/exit`；Ctrl+C 中断当前轮。
+
+从任意目标项目目录也可启动，保持当前工作目录并读取安装仓库配置：
+
+```sh
+node /绝对路径/pi-superagent/scripts/pi-superagent.mjs
+```
+
+验证与更新：
+
+```sh
 npm run check
-npm link
-pi-superagent --help
+git pull
+npm install
 ```
 
 ## 工单与服务模式
 
 ```sh
-pi-superagent run "把 README 中指定的拼写错误改为正确文本" --cwd /绝对路径/目标仓库
+npm start -- run "把 README 中指定的拼写错误改为正确文本" --cwd /绝对路径/目标仓库
 ```
 
 任务在独立 Git worktree 中执行，不覆盖原工作目录；结果显示 worktree 路径与工单状态。首次无配置的本地运行会添加本地 `operator` 授权；显式 `--config` 不会自动改写允许名单或规则。默认仅启用受目录边界约束的文件工具。需要运行测试、Git 提交或创建 PR 时，显式添加 `--allow-shell`。Shell **不是操作系统沙箱**，只能用于可信仓库与受控账户；建议容器、独立凭据和最小 GitHub 权限。Shell 子进程过滤包含 KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL 的环境变量，工具输出对已知秘密原文脱敏；不支持依赖 `GH_TOKEN` / `GITHUB_TOKEN` 的 Shell 认证，`gh` 可使用系统钥匙串。HOME/PATH 仍保留，无法防止未知文件凭据、编码泄露或网络外传。
@@ -53,7 +59,7 @@ pi-superagent run "把 README 中指定的拼写错误改为正确文本" --cwd 
 
 ```sh
 export PI_SUPERAGENT_TOKEN=设置一个至少32字符的随机访问令牌
-pi-superagent serve --cwd /绝对路径/目标仓库 \
+npm start -- serve --cwd /绝对路径/目标仓库 \
   --repository owner/repo --bot bot-login --allowed trusted-login \
   --config examples/pi-settings.json --allow-shell
 ```
@@ -65,9 +71,9 @@ pi-superagent serve --cwd /绝对路径/目标仓库 \
 其他命令：
 
 ```sh
-pi-superagent status --state /绝对路径/状态目录
-pi-superagent stop <ticket-id> --state /绝对路径/状态目录
-pi-superagent retry <ticket-id> --state /绝对路径/状态目录
+npm start -- status --state /绝对路径/状态目录
+npm start -- stop <ticket-id> --state /绝对路径/状态目录
+npm start -- retry <ticket-id> --state /绝对路径/状态目录
 npm run check
 ```
 
