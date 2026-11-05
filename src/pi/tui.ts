@@ -35,7 +35,7 @@ export type { Terminal } from '@earendil-works/pi-tui'
 
 const outputLimit = 16_000
 const secretName = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE/i
-const internalTool = /^(?:orchestrator_report|trigger_handback)$/
+const internalTool = /^(?:orchestrator_report|trigger_handback|orchestrator_read|orchestrator_ack|thread_unrelated|thread_follow|thread_bind_own_pr)$/
 /** Ticket inputs are protocol envelopes (mandate JSON, restart notes, status requests); only a person's words belong in the transcript. */
 const internalInput = (text: string) =>
   /^\s*(?:工单输入|开始执行本工单|The host restarted during this ticket\.|Report the current ticket status with orchestrator_report\.|\[\{|\{)/.test(text)
@@ -89,6 +89,7 @@ const palette = {
   error: paint('okhsl(20 72% 67%)'),
   warning: paint('okhsl(83 88% 67%)'),
   muted: paint('okhsl(229 6% 67%)'),
+  text: paint('okhsl(234 3% 89%)'),
   dim: paint('okhsl(229 8% 56%)'),
   userBg: fill('okhsl(233 41% 24%)'),
   toolPendingBg: fill('okhsl(229 5% 24%)'),
@@ -472,7 +473,7 @@ class ToolCard implements Component {
 
   /** The title line: `name object…`, matching pi's per-tool call renderers. */
   private title(): string {
-    const name = bold(palette.muted(this.name))
+    const name = bold(palette.text(this.name))
     const path = this.path()
     switch (this.name) {
       case 'read': {
@@ -492,6 +493,7 @@ class ToolCard implements Component {
         return `${name} ${palette.accent(`/${this.text('pattern') ?? ''}/`)}${palette.dim(` in ${this.path() ?? '.'}`)}`
       case 'ls':
         return `${name} ${palette.accent(path ?? '.')}`
+
       default: {
         const keys = Object.entries(this.args)
           .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
@@ -508,10 +510,16 @@ class ToolCard implements Component {
     const clip = (lines: string[], limit: number): string[] => {
       const kept = lines.slice(0, limit)
       const hidden = lines.length - kept.length
-      if (hidden > 0) kept.push(palette.dim(`… 还有 ${hidden} 行，Ctrl+O 展开`))
+      // pi ends the preview with its own last line plus an inline hint, instead of a line of its own.
+      if (hidden > 0) {
+        const last = kept.pop() ?? ''
+        kept.push(`${last}  ${palette.dim(`… 还有 ${hidden} 行 · Ctrl+O 展开`)}`)
+      }
       return kept
     }
-    const output = this.output.split('\n').map(line => line.trimEnd())
+    const raw = this.output.split('\n').map(line => line.trimEnd())
+    // A failed call explains itself in the error color, as pi's rows do.
+    const output = this.state === 'failed' ? raw.map(line => palette.error(line)) : raw
     switch (this.name) {
       case 'read':
         // Like pi, a collapsed read row shows no body: the file is on disk or in the editor. Only a failure explains itself.
