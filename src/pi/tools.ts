@@ -10,6 +10,11 @@ import { z } from 'zod'
 export interface CodingToolsOptions {
   allowShell?: boolean
   blockedCommands?: string[]
+  /**
+   * Only the tools that observe the workspace: `read`, `glob`, and `grep`. The conversation path answers questions about the
+   * project without being able to change it, so seeing the code is enough and writing is not.
+   */
+  readOnly?: boolean
 }
 
 const OUTPUT_LIMIT = 32768
@@ -362,6 +367,10 @@ export function codingTools(cwd: string, options: CodingToolsOptions = {}): Agen
           })
         })
       }))
+  }
+  if (options.readOnly === true) {
+    const observing = new Set(['read', 'glob', 'grep'])
+    return tools.filter(item => observing.has(item.name))
   }
   return tools
 }

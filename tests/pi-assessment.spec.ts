@@ -29,6 +29,20 @@ describe('pi 结构化评估', () => {
       expect(result.rule_assessments).toHaveLength(2)
     } finally { provider.unregister() }
   })
+  it('不合法结论不会先被记住，模型可据错误修正', async () => {
+    const provider = registerFauxProvider()
+    const invalid = { ...submission, direction: { implementation_requested: true, target_basis: 'specified', requires_design_decision: false, evidence: 'x' }, rule_assessments: [] }
+    provider.setResponses([
+      fauxAssistantMessage([fauxToolCall('submit_assessment', invalid, { id: 'bad' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage([fauxToolCall('submit_assessment', submission, { id: 'good' })], { stopReason: 'toolUse' }),
+      fauxAssistantMessage(fauxText('已修正')),
+    ])
+    try {
+      const result = await assessCandidate(options => new Agent({ initialState: { ...options, model: provider.getModel() }, streamFn: streamSimple }), candidate, SettingsSchema.parse({}))
+      expect(result.decision).toBe('accept')
+      expect(result.rule_assessments).toHaveLength(2)
+    } finally { provider.unregister() }
+  })
   it('无结构化结论不能假装通过', async () => {
     const provider = registerFauxProvider()
     provider.setResponses([fauxAssistantMessage(fauxText('看起来可以'))])

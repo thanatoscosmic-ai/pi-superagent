@@ -48,6 +48,14 @@ describe('文件工具', () => {
     expect(shell?.description).toContain('非沙箱')
   })
 
+  it('readOnly 只给观察类工具，不能写文件或运行命令', () => {
+    const observing = codingTools(cwd, { readOnly: true })
+    expect(observing.map(tool => tool.name)).toEqual(['read', 'glob', 'grep'])
+    const shell = codingTools(cwd, { readOnly: true, allowShell: true })
+    expect(shell.some(tool => tool.name === 'bash')).toBe(false)
+    expect(shell.some(tool => ['write', 'edit'].includes(tool.name))).toBe(false)
+  })
+
   it('写入、读取、覆盖及精确编辑临时文件', async () => {
     await call('write', { path: 'nested/demo.txt', content: '第一行\n第二行\n第三行' })
     expect(await readFile(join(cwd, 'nested/demo.txt'), 'utf8')).toBe('第一行\n第二行\n第三行')

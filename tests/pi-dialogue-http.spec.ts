@@ -45,7 +45,7 @@ it('实际 HTTP 模型适配器完成问候、咨询、澄清与授权编码全�
           direction: { implementation_requested: task, target_basis: task ? 'specified' : 'undetermined', requires_design_decision: false, evidence: task ? '指定 fixed' : '未授权实施' },
           intent_evidence: task ? '将 message.txt 改为 fixed' : null,
         } }
-      } else if (!tools.length) {
+      } else if (tools.length > 0 && tools.every(name => ['read', 'glob', 'grep'].includes(name))) {
         const user = contentText(body.messages.findLast(message => message.role === 'user')?.content)
         text = user === 'hi' ? '你好！有什么可以帮助你？' : user === 'nihao' ? '你好，我们可以继续交流。'
           : user === '你能做什么？' ? '我可以解释问题；明确的编码任务会通过授权流程执行。' : '目标尚未确定，未执行修改。你希望文件改成什么内容？'
@@ -90,7 +90,10 @@ it('实际 HTTP 模型适配器完成问候、咨询、澄清与授权编码全�
     expect(responses()[3]).toContain('你希望文件改成什么内容')
     expect(controller.snapshot().tickets).toHaveLength(0)
     expect(readFileSync(join(cwd, 'message.txt'), 'utf8')).toBe('old')
-    const dialogueRequests = requests.filter(body => !(body.tools?.length))
+    const dialogueRequests = requests.filter(body => {
+      const names = body.tools?.map(tool => tool.function.name) ?? []
+      return names.length > 0 && names.every(name => ['read', 'glob', 'grep'].includes(name))
+    })
     expect(dialogueRequests).toHaveLength(4)
     expect(dialogueRequests[1]?.messages.some(message => contentText(message.content).includes('hi'))).toBe(true)
     await controller.submit('将 message.txt 改为 fixed')

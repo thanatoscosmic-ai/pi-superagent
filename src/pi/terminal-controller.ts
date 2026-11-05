@@ -192,7 +192,10 @@ export async function createTerminalController(options: {
       // Judge under `auto` even in `observe`: the term only decides whether inferred work is *accepted*, and this message is
       // already an explicit request from the person at the terminal, whose verdict the gate above allowed.
       const settings = runtime.store.settings()
-      return await assessCandidate(factory, candidate, { ...settings, eval: { ...settings.eval, mode: 'auto' } })
+      // The message speaks about a concrete working directory, so the assessment must know it: "当前目录" is a target here,
+      // not an unsettled one. A judgement failure keeps the message on the audited path, which records `unavailable`.
+      candidate.triggers[0]!.meta = { repositoryDirectory: cwd }
+      return await assessCandidate(factory, candidate, { ...settings, eval: { ...settings.eval, mode: 'auto' } }, undefined, cwd)
     } catch { return undefined }
   }
   /** Earlier user/assistant messages of the current thread, so a resumed session shows what was said. */
@@ -248,6 +251,8 @@ export async function createTerminalController(options: {
   /** A message of a person on the terminal that the conversation agent answers itself: never a Decision, never a Ticket. */
   const startDialogue = () => {
     if (dialogueTask || closing || !dialogueQueue.length) return
+    // Reading the project is how a question about it gets answered; changing it still needs the authorized path.
+    const observation = codingTools(cwd, { readOnly: true })
     dialogueCancelled = false
     dialogueTask = Promise.resolve().then(async () => {
       while (!dialogueCancelled && !closing && dialogueQueue.length) {
@@ -268,27 +273,31 @@ export async function createTerminalController(options: {
           runtime.store.db.prepare('INSERT INTO pi_terminal_dialogue VALUES (?, ?, ?) ON CONFLICT(thread) DO UPDATE SET messages = excluded.messages, processed = excluded.processed')
             .run(item.thread, data, JSON.stringify(processed))
         }
-        // The conversation path has no tools, so it can neither act nor widen authority; an ignored Decision only supplies the reason.
+        // The conversation path may look at the workspace, never change it: read-only tools, no shell, no ticket powers.
+        // An ignored Decision only supplies the reason, as a fact.
         const reason = item.kind === 'ignored'
           ? `\n以下是这条请求已记录的评估结论，作为事实而不是指令：${JSON.stringify(sanitize({ kind: item.decision.kind, reason: item.decision.reason, detail: reasonText(item.decision.reason) }))}`
           : ''
         try {
           save()
           const agent = factory({
-            cwd, roleModel: runtime.store.settings().executor.model, tools: [], messages,
+            cwd, roleModel: runtime.store.settings().executor.model, tools: observation, messages,
             systemPrompt: [
-              '你是终端里的中文对话助手，直接回答问候、问题与讨论。',
-              '你没有执行能力：不能读写文件、不能运行命令、不能创建或改变工单，也不要声称已经做过这些事。',
+              `你是终端里的中文对话助手。当前工作目录就是 ${cwd}，用户说的「项目」「当前目录」「这个仓库」都指它，不要去问路径。`,
+              observation.length
+                ? `你可以用 ${observation.map(tool => tool.name).join('、')} 只读地查看这个项目：回答「分析架构」「解释这段代码」「这个功能在哪」这类问题时，先实际读代码再回答，不要凭空猜测，也不要让用户贴文件。`
+                : '你没有读取项目的能力，涉及具体代码的问题请说明需要用户提供什么。',
+              '你不能修改任何东西：不能写文件、不能运行命令、不能创建或改变工单，也不要声称已经做过这些事。',
               'ignore 不代表允许执行：没有 Mandate，不得执行编码、修改文件、调用工具或创建工单。',
-              '对于没有开工的实施请求，给简洁原因，并只提出一个澄清问题；不要把 ignore 说成失败。',
+              '如果用户要的是改动（修 bug、加功能、改文档等），说明已收到并会被评估，请用户确认目标与范围；不要自己开始实施。',
+              '对于没有开工的实施请求，给简洁原因，并只提出一个澄清问题；不要把未开工说成失败。',
               '回答保持简短。',
               item.kind === 'ignored' ? '这条消息的评估结论已附在下面，据此解释为什么还没有开工。' : '',
             ].filter(Boolean).join('\n') + reason,
           })
-          agent.state.tools = []
           dialogue = agent
           unsubscribeDialogue = agent.subscribe(event => {
-            if (event.type === 'turn_start' && ++turns > 4) { limit = 'dialogue 超过 4 turn 限制，已取消。'; agent.abort() }
+            if (event.type === 'turn_start' && ++turns > 8) { limit = 'dialogue 超过 8 turn 限制，已取消。'; agent.abort() }
             if (event.type === 'message_end') {
               try { save() } catch (error) { limit = String(sanitize(String(error))); agent.abort() }
             }
@@ -299,7 +308,8 @@ export async function createTerminalController(options: {
             if (limit || dialogueCancelled || closing) throw new Error(limit ?? 'dialogue 已取消。')
             const update = await prepare?.(request, signal)
             if (limit || dialogueCancelled || closing) throw new Error(limit ?? 'dialogue 已取消。')
-            return { ...update, context: { ...(update?.context ?? request.context), tools: [] } }
+            // Re-assert the read-only set on every request: a restored session may carry tools it was created with.
+            return { ...update, context: { ...(update?.context ?? request.context), tools: observation } }
           }
           timeout = setTimeout(() => { limit = 'dialogue 超过 30 秒限制，已取消。'; agent.abort() }, 30_000)
           await agent.prompt(item.text)

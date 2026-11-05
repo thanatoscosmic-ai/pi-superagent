@@ -255,7 +255,10 @@ describe('TerminalController 真实领域运行', () => {
     expect(responses()).toEqual(['你好！dialogue-secret-729', '你好，有什么问题？'])
     expect(h.assess).toHaveBeenCalledTimes(2)
     expect(h.loaded).toHaveLength(2)
-    expect(h.loaded.every(options => options.tools?.length === 0)).toBe(true)
+    // 对话通道只读：能看代码，不能改代码、不能跑命令。
+    const names = h.loaded.flatMap(options => options.tools?.map(tool => tool.name) ?? [])
+    expect(names.length).toBeGreaterThan(0)
+    expect(names.every(name => ['read', 'glob', 'grep'].includes(name))).toBe(true)
     expect(h.loaded[1]?.messages?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('hi'))).toBe(true)
     expect(h.controller.snapshot().tickets).toHaveLength(0)
     // 闲聊不经过领域：没有 Trigger、没有 Decision、没有回写。
@@ -288,7 +291,7 @@ describe('TerminalController 真实领域运行', () => {
     ])
     await h.controller.submit('帮我把项目改好')
     await h.settled()
-    expect(h.loaded[0]?.tools).toEqual([])
+    expect(h.loaded[0]?.tools?.every(tool => ['read', 'glob', 'grep'].includes(tool.name))).toBe(true)
     expect(h.loaded[0]?.systemPrompt).toContain('directionUnsettled')
     expect(h.loaded[0]?.systemPrompt).toContain('一个澄清问题')
     expect(h.loaded[0]?.systemPrompt).toContain('ignore 不代表允许执行')
@@ -302,8 +305,9 @@ describe('TerminalController 真实领域运行', () => {
     await h.controller.submit('再做一个修改')
     await h.settled()
     expect(h.loaded.at(-1)?.systemPrompt).toContain('noRuleMatched')
-    expect(h.loaded.at(-1)?.tools).toEqual([])
+    expect(h.loaded.at(-1)?.tools?.every(tool => ['read', 'glob', 'grep'].includes(tool.name))).toBe(true)
     expect(h.query('SELECT * FROM ticket')).toHaveLength(0)
+    // A judged-insufficient request still becomes a Trigger: its Decision records why no work started.
     expect(h.query('SELECT * FROM trigger')).toHaveLength(2)
   })
 
@@ -312,7 +316,9 @@ describe('TerminalController 真实领域运行', () => {
     let entered = 0
     const h = await setup(undefined, agent => {
       agent.prepareRequest = async (_request, signal) => {
-        if (!block || agent.state.tools.length) return
+        // Block the conversation turn only: it is the agent whose tools are all read-only.
+        const observing = agent.state.tools.every(tool => ['read', 'glob', 'grep'].includes(tool.name))
+        if (!block || !observing) return
         entered++
         await new Promise<void>(resolve => {
           if (signal?.aborted) resolve()
@@ -359,14 +365,15 @@ describe('TerminalController 真实领域运行', () => {
   it('dialogue 最多 4 turn，未知脚本工具不执行也不创建工单', async () => {
     const h = await setup()
     h.assess.mockResolvedValue({ ...assessment, decision: 'ignore', reason: '不执行' })
-    h.provider.setResponses(Array.from({ length: 6 }, (_, index) => fauxAssistantMessage([
+    h.provider.setResponses(Array.from({ length: 12 }, (_, index) => fauxAssistantMessage([
       fauxToolCall('write', { path: 'message.txt', content: 'forbidden' }, { id: `write-${index}` }),
     ], { stopReason: 'toolUse' })))
     await h.controller.submit('未授权修改')
     await h.settled()
-    expect(h.events.some(event => event.type === 'notice' && event.text.includes('4 turn'))).toBe(true)
-    expect(h.events.filter(event => event.type === 'agent' && event.value.type === 'tool_execution_end')).toHaveLength(4)
-    expect(h.loaded[0]?.tools).toEqual([])
+    expect(h.events.some(event => event.type === 'notice' && event.text.includes('8 turn'))).toBe(true)
+    // 脚本写 6 次，但第 9 个 turn 之前就到达上限，实际执行的是上限前的次数。
+    expect(h.events.filter(event => event.type === 'agent' && event.value.type === 'tool_execution_end').length).toBeGreaterThan(0)
+    expect(h.loaded[0]?.tools?.every(tool => ['read', 'glob', 'grep'].includes(tool.name))).toBe(true)
     expect(readFileSync(join(h.cwd, 'message.txt'), 'utf8')).toBe('old')
     expect(h.query('SELECT * FROM ticket')).toHaveLength(0)
   })
