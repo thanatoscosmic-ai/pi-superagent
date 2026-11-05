@@ -1,6 +1,7 @@
 import { Agent, type AgentMessage, type AgentOptions, type AgentTool, type StreamFn, type ThinkingLevel } from '@earendil-works/pi-agent-core'
 import { getSupportedThinkingLevels, lazyStream, type Model } from '@earendil-works/pi-ai'
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { trimMessages } from './context.js'
 import { codingTools } from './tools.js'
 
 export type PiModel = Model<'openai-completions'>
@@ -17,6 +18,11 @@ export interface CreatePiAgentOptions {
   roleModel?: import('../policy.ts').RoleModel | null
   model?: PiModel
   streamFn?: PiStreamFn
+}
+
+/** The window the configured model reports, so a screen can show how full its context is before any request ran. */
+export function configuredWindow(roleModel?: import('../policy.ts').RoleModel | null): number {
+  try { return environmentModel(roleModel).contextWindow } catch { return 0 }
 }
 
 function environmentModel(roleModel?: import('../policy.ts').RoleModel | null): PiModel {
@@ -97,6 +103,9 @@ export function createPiAgent(options: CreatePiAgentOptions): Agent {
     streamFn,
     getApiKey: () => apiKey,
     beforeToolCall: options.beforeToolCall,
+    // Keep every request inside the window: pi clamps the answer to what is left, and a transcript at the brim would leave
+    // a one-token answer that stops on `length` without ever reporting.
+    transformContext: async messages => trimMessages(messages, model.contextWindow),
     toolExecution: 'sequential',
     transport: 'sse',
   })

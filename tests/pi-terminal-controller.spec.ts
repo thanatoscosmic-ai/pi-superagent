@@ -621,6 +621,19 @@ describe('TerminalController 真实领域运行', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('模型窗口无需先发消息即可显示，且随对话给出上下文占用', async () => {
+    vi.stubEnv('OPENAI_BASE_URL', 'https://api.deepseek.com/v1')
+    vi.stubEnv('OPENAI_MODEL', 'deepseek-chat')
+    const h = await setup()
+    // Before any request the footer still names the window; the agent that would report it does not exist yet.
+    expect(h.controller.snapshot().usage.window).toBe(128000)
+    await h.controller.submit('把 message.txt 改为 fixed')
+    await h.settled()
+    const { usage } = h.controller.snapshot()
+    expect(usage.window).toBeGreaterThan(0)
+    expect(usage.context).toBeGreaterThanOrEqual(0)
+  })
+
   it('direct coding 可在非 Git 启动，切 tickets 验证仓库且不丢上下文', async () => {
     const root = mkdtempSync(join(tmpdir(), 'pi-terminal-direct-'))
     const provider = registerFauxProvider()

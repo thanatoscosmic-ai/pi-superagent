@@ -3,6 +3,7 @@ import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { Agent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
+import { isContextOverflow } from '@earendil-works/pi-ai'
 import { z } from 'zod'
 import { Engine, latestAssignment, liveTicket, runningAssignment } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, Executor, Ticket, TicketInput, WorkerReport } from '../core/index.ts'
@@ -417,12 +418,34 @@ export class PiExecutor implements Executor {
     if (!messages.length) messages.push({ role: 'user', content: '恢复当前工单，检查既有状态，避免重复外部操作，并明确报告状态。', timestamp: Date.now() })
     const timer = setTimeout(() => { worker.error = '执行超过三十分钟，已中止。'; worker.agent.abort() }, 30 * 60 * 1000)
     let interrupted = false
+    /** Why the last answer stopped short, when the model ran out of room instead of finishing its turn. */
+    const truncated = (): string | undefined => {
+      const last = worker.agent.state.messages.findLast(message => message.role === 'assistant')
+      if (!last || last.role !== 'assistant' || last.stopReason !== 'length') return undefined
+      const window = worker.agent.state.model.contextWindow
+      const used = last.usage.input + last.usage.cacheRead + last.usage.cacheWrite + last.usage.output
+      // pi asks for the model's output limit only as far as the window allows, so a prompt that filled the window leaves an
+      // answer of a token or two. That is context pressure, not a model that merely wrote a long answer.
+      if (isContextOverflow(last, window) || (window > 0 && used >= window * 0.9)) {
+        return '模型上下文窗口已接近上限，回答在长度上限处被截断。'
+      }
+      return '模型输出达到长度上限，回答被截断。'
+    }
     const task = Promise.resolve().then(async () => {
       try {
         if (worker.paused || this.host.paused()) { interrupted = true; return }
-        await worker.agent.prompt(messages)
-        await worker.agent.waitForIdle()
-        if (worker.agent.state.errorMessage && !worker.error) worker.error = this.errorText(worker.agent.state.errorMessage)
+        let next = messages
+        // A truncated answer ends the turn as if the model had finished, so nothing prompts it to go on: the run would end
+        // silently and the ticket would wait for a person who was never asked anything. Give it one more turn instead.
+        for (let attempt = 0; ; attempt++) {
+          await worker.agent.prompt(next)
+          await worker.agent.waitForIdle()
+          if (worker.agent.state.errorMessage && !worker.error) worker.error = this.errorText(worker.agent.state.errorMessage)
+          const cut = worker.error || worker.paused || this.host.paused() || worker.reported ? undefined : truncated()
+          if (!cut) break
+          if (attempt >= 1 || !this.current(worker.ticketId, assignmentId)) { worker.error = `${cut}请拆分任务或缩小范围后重试。`; break }
+          next = [{ role: 'user', content: '上一轮回答在长度上限处被截断，未能完成。请接着说明已完成的部分，然后继续用工具推进；需要汇报时调用 orchestrator_report。', timestamp: Date.now() }]
+        }
       } catch (error) {
         worker.error = `执行失败：${this.errorText(error)}`
       } finally {

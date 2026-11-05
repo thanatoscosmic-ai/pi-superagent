@@ -9,7 +9,7 @@ import { key as digest, latestAssignment, type Candidate, type Decision, type Ti
 import { reasonText } from '../core/reasons.ts'
 import { assessmentOutcome, settingsPolicy, SettingsSchema, type Assessment } from '../policy.ts'
 import { assessCandidate } from './assessment.ts'
-import { createPiAgent } from './model.ts'
+import { configuredWindow, createPiAgent } from './model.ts'
 import { PiRuntime } from './runtime.ts'
 import { codingTools } from './tools.ts'
 import type { AgentFactory, RuntimeConfig } from './types.ts'
@@ -223,9 +223,18 @@ export async function createTerminalController(options: {
     }
     return entries
   }
-  /** Token usage of the agent in view, from the last assistant message of its transcript. */
-  const usage = (agent: Agent | undefined, fallback: TranscriptEntry[]) => {
-    const messages = agent?.state.messages ?? []
+  /** The stored messages of the current thread, so a resumed session shows its usage before an agent runs. */
+  const stored = (): AgentMessage[] => {
+    const source = mode === 'coding'
+      ? runtime.store.db.prepare('SELECT messages FROM pi_terminal_coding WHERE thread = ?').get(thread)
+      : runtime.store.db.prepare('SELECT messages FROM pi_terminal_dialogue WHERE thread = ?').get(thread)
+    try {
+      return source ? (JSON.parse(String(source.messages)) as AgentMessage[]).filter(message => message.role !== 'system') : []
+    } catch { return [] }
+  }
+  /** Token usage of the agent in view, from the last assistant message of its transcript; the stored one when it is idle. */
+  const usage = (agent: Agent | undefined, stored: () => AgentMessage[]) => {
+    const messages = agent?.state.messages?.length ? agent.state.messages : stored()
     let input = 0, output = 0, cacheRead = 0
     for (const message of messages) {
       if (message.role !== 'assistant' || !('usage' in message) || !message.usage) continue
@@ -238,10 +247,14 @@ export async function createTerminalController(options: {
     const context = last && 'usage' in last && last.usage
       ? (last.usage.input ?? 0) + (last.usage.cacheRead ?? 0) + (last.usage.cacheWrite ?? 0) + (last.usage.output ?? 0)
       : 0
-    const window = agent?.state.model?.contextWindow ?? 0
-    if (!messages.length && fallback.length) return { input: 0, output: 0, cacheRead: 0, total: 0, context: 0, window }
+    const window = agent?.state.model?.contextWindow || configured()
     return { input, output, cacheRead, total: input + output, context, window }
   }
+  /**
+   * The window the configured model reports. Before the first message no conversation agent exists yet, and the footer
+   * still names the model and its window: the value describes the configuration, not the current transcript.
+   */
+  const configured = (): number => configuredWindow(runtime.store.settings().executor.model)
   const snapshot = (): TerminalSnapshot => {
     if (closed && finalSnapshot) return structuredClone(finalSnapshot)
     const tickets = runtime.store.tickets.list()
@@ -257,7 +270,7 @@ export async function createTerminalController(options: {
       attention: tickets.filter(item => !item.ended && item.attention).length,
       health: { ...structuredClone(runtime.health()), ...(dialogueHealth ? { dialogue: structuredClone(dialogueHealth) } : {}) },
       history: transcript(),
-      usage: mode === 'coding' ? usage(coding, []) : usage(dialogue, []),
+      usage: mode === 'coding' ? usage(coding, stored) : usage(dialogue, stored),
     }
   }
   const publish = () => { if (!closing) { reportFailures(); emit({ type: 'snapshot', value: snapshot() }) } }

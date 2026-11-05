@@ -36,6 +36,22 @@ function response(content: AssistantMessage['content'], error?: string): Assista
 function call(name: string, args: Extract<AssistantMessage['content'][number], { type: 'toolCall' }>['arguments']): AssistantMessageEventStream {
   return response([{ type: 'toolCall', id: `call-${name}`, name, arguments: args }])
 }
+/** An answer the output limit cut off: the model stopped mid-sentence and asked nothing of anyone. */
+function truncated(content: AssistantMessage['content'], usage?: { input: number; output: number }): AssistantMessageEventStream {
+  const stream = new AssistantMessageEventStream()
+  const input = usage?.input ?? 0
+  const output = usage?.output ?? model.maxTokens
+  const message: AssistantMessage = {
+    role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
+    stopReason: 'length',
+    usage: { input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+  }
+  stream.push({ type: 'start', partial: message })
+  stream.push({ type: 'done', reason: 'length', message })
+  stream.end(message)
+  return stream
+}
 function trigger(id: string, thread = 'conversation'): Trigger {
   return { id, source: 'chat', threads: [{ source: 'chat', id: thread }], actor: { source: 'chat', id: 'person' }, human: true,
     addressed: 'direct', at: new Date().toISOString(), text: `请求 ${id}`, meta: {}, channel: { source: 'chat', thread, address: {} } }
@@ -345,6 +361,43 @@ describe('Pi 执行器', () => {
       expect(blocked).toMatchObject({ block: true, terminate: true })
     }
     expect(host.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+  })
+
+  it('回答因长度上限被截断时续一轮，不把沉默当成 waiting', async () => {
+    const seen: string[] = []
+    let calls = 0
+    const host = harness(async (_model, context) => {
+      seen.push(JSON.stringify(context.messages.at(-1)?.content ?? ''))
+      if (++calls === 1) return truncated([{ type: 'text', text: '正在读取' }])
+      return call('orchestrator_report', { state: 'ready', summary: '截断后继续并完成' })
+    })
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    expect(host.factory).toHaveBeenCalledOnce()
+    expect(seen).toHaveLength(2)
+    expect(seen[1]).toContain('截断')
+    expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report?.state).toBe('ready')
+    expect(host.store.tickets.get(ticket.id)?.ended?.outcome).toBe('completed')
+  })
+
+  it('持续截断时报告 failed 并说明原因，而不是等待人员', async () => {
+    const host = harness(() => truncated([{ type: 'text', text: '' }]))
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    const report = latestAssignment(host.store.tickets.get(ticket.id)!)?.report
+    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('长度上限') })
+    expect(host.factory.mock.calls.length).toBe(1)
+  })
+
+  it('上下文接近窗口上限导致的截断说明真实原因', async () => {
+    const host = harness(() => truncated([{ type: 'text', text: '' }], { input: model.contextWindow - 200, output: 1 }))
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    const report = latestAssignment(host.store.tickets.get(ticket.id)!)?.report
+    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('上下文窗口') })
   })
 
   it('三十分钟超时取消并报告 failed', async () => {
