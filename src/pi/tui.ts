@@ -214,18 +214,27 @@ type Sanitize = ReturnType<typeof createSanitizer>
 /** Only styling this file produces may pass through; anything else is dropped. */
 const permittedSgr = /^\x1b\[(?:0|1|2|3|4|9|22|23|24|27|29|39|49|38;5;\d{1,3}|48;5;\d{1,3}|38;2;\d{1,3};\d{1,3};\d{1,3}|48;2;\d{1,3};\d{1,3};\d{1,3})m$/
 
-function safeRendered(text: string, sanitize: Sanitize): string {
-  let marker = ''
-  while (text.includes(marker)) marker += ''
+/**
+ * Render one line through the sanitizer.
+ * @param keepCursor - Keep the TUI's own cursor protocol. The editor paints its caret as `\x1b_pi:fc`…`\x1b_pi:/fc` beside the
+ * zero-width hardware marker; treating those as untrusted escapes removes the visible caret while typing.
+ */
+function safeRendered(text: string, sanitize: Sanitize, keepCursor = false): string {
+  // A private-use character that cannot occur in terminal output; grow it until it is absent from the line.
+  let marker = '\ue000'
+  while (text.includes(marker)) marker += '\ue000'
   const sequences: string[] = []
-  const protectedText = text.replace(/\x1b\[[0-9;]*m/g, sequence => {
-    sequences.push(sequence)
-    return `${marker}${sequences.length - 1}${marker}`
-  })
-  return sanitize(protectedText).replace(new RegExp(`${marker}(\\d+)${marker}`, 'g'), (_, index) => {
+  const protect = (sequence: string) => { sequences.push(sequence); return `${marker}${sequences.length - 1}${marker}` }
+  // Protect styling first, and the TUI's cursor protocol with it: both must survive a sanitizer meant for untrusted text.
+  let protectedText = text.replace(/\x1b\[[0-9;]*m/g, protect)
+  if (keepCursor) protectedText = protectedText.replace(/\x1b_pi:(?:c|fc|\/fc)\x07/g, protect)
+  const restored = sanitize(protectedText).replace(new RegExp(`${marker}(\\d+)${marker}`, 'g'), (_, index) => {
     const sequence = sequences[Number(index)] ?? ''
-    return permittedSgr.test(sequence) ? sequence : ''
+    if (permittedSgr.test(sequence)) return sequence
+    if (keepCursor && /^\x1b_pi:(?:c|fc|\/fc)\x07$/.test(sequence)) return sequence === '\x1b_pi:c\x07' ? CURSOR_MARKER : sequence
+    return ''
   })
+  return restored
 }
 
 function safeLines(lines: string[], width: number, sanitize: Sanitize): string[] {
@@ -372,13 +381,23 @@ class SafeEditor extends Editor {
       if (content.length) content[content.length - 1] += CURSOR_MARKER
       return [safeRendered(lines[0] ?? '', this.sanitize), ...content, safeRendered(lines.at(-1) ?? '', this.sanitize)]
     }
-    return lines.map(line => line.split(CURSOR_MARKER).map(part => safeRendered(part, this.sanitize)).join(CURSOR_MARKER))
+    // The editor's own cursor is a protocol sequence of the TUI, not user text: keep the hardware-cursor marker and the
+    // fake-cursor cell that paints it, or the caret disappears while typing.
+    return lines.map(line => safeRendered(line, this.sanitize, true))
   }
 }
 
 function pad(text: string, width: number): string {
   const visible = visibleWidth(stripTerminalSequences(text))
   return `${text}${' '.repeat(Math.max(0, width - visible))}`
+}
+
+/** Token counts as pi's footer shows them: `820`, `8.2k`, `128k`, `1.0M`. */
+function formatTokens(count: number): string {
+  if (count < 1_000) return String(count)
+  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`
+  if (count < 1_000_000) return `${Math.round(count / 1_000)}k`
+  return `${(count / 1_000_000).toFixed(1)}M`
 }
 
 function formatDuration(ms: number): string {
@@ -681,6 +700,10 @@ function statusReport(value: TerminalSnapshot): string {
     `在办    评估 ${value.evaluating} · 运行 ${value.running} · 队列 ${value.queued} · 回写 ${value.pendingReplies} · 待人工 ${value.attention}`,
     `工单    ${value.tickets.length} 个${value.tickets.length ? `（未结束 ${value.tickets.filter(ticket => !ticket.ended).length}）` : ''}`,
     `健康    ${healthy.length ? `正常：${healthy.join('、')}` : '无组件上报'}`,
+    `上下文  ${value.usage.window
+      ? `${formatTokens(value.usage.context)} / ${formatTokens(value.usage.window)}（${Math.round((value.usage.context / value.usage.window) * 100)}%）`
+      : '模型未报告窗口'}`,
+    `用量    输入 ${formatTokens(value.usage.input)} · 输出 ${formatTokens(value.usage.output)} · 缓存读 ${formatTokens(value.usage.cacheRead)}`,
   ].join('\n')
 }
 
@@ -1134,9 +1157,14 @@ export async function runTerminal(
       const parts = [`${flags.join(' · ')} · ${state}`]
       if (ticket) parts.push(ticketSummary(ticket))
       const branch = gitBranch(snapshot.cwd)
+      // Like pi's footer: the model on the right, with its context window and how full it is.
+      const { usage } = snapshot
+      const percent = usage.window ? Math.round((usage.context / usage.window) * 100) : undefined
+      const window = usage.window ? formatTokens(usage.window) : undefined
+      const context = percent === undefined ? '' : percent > 90 ? palette.error(`${percent}%/${window}`) : percent > 70 ? palette.warning(`${percent}%/${window}`) : `${percent}%/${window}`
       return {
         left: `${shortPath(snapshot.cwd)}${branch ? ` (${branch})` : ''}`,
-        right: snapshot.model,
+        right: context ? `${snapshot.model} ${context}` : snapshot.model,
         stats: parts.filter(Boolean).join('   '),
         alert,
       }

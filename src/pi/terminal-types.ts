@@ -23,6 +23,8 @@ export interface TerminalSnapshot {
   health: Record<string, { state: string; detail: string }>
   /** Conversation so far, oldest first; only what a person or the agent actually said. */
   history: TranscriptEntry[]
+  /** Token usage of the agent the person is talking to, and how full its context window is. */
+  usage: { input: number; output: number; cacheRead: number; total: number; context: number; window: number }
 }
 
 export interface TerminalController {

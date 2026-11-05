@@ -78,7 +78,8 @@ function snapshot(overrides: Partial<TerminalSnapshot> = {}): TerminalSnapshot {
   return {
     mode: 'tickets', cwd: '/Users/zhangyahao/Desktop/projects/pi-superagent', model: 'offline-model',
     shell: false, paused: false, tickets: [], evaluating: 0, queued: 0, pendingReplies: 0,
-    running: 0, attention: 0, health: {}, history: [], ...overrides,
+    running: 0, attention: 0, health: {}, history: [],
+    usage: { input: 0, output: 0, cacheRead: 0, total: 0, context: 0, window: 0 }, ...overrides,
   }
 }
 
@@ -579,7 +580,9 @@ describe('pi 组件终端', () => {
     expect(raw).not.toContain('\x1b[35m')
     expect(raw).not.toContain('ATTACK')
     expect(raw).not.toContain('\x1b]')
-    expect(raw.split(CURSOR_MARKER).join('').replace(/\x1b\[[0-9;]*m/g, '')).not.toContain('\x1b')
+    expect(raw.split(CURSOR_MARKER).join('')
+      .replace(/\x1b\[[0-9;]*m/g, '')
+      .replace(/\x1b_pi:(?:fc|\/fc)\x07/g, '')).not.toContain('\x1b')
     const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
     expect(editor.render(100).join('\n')).toContain('─')
     for (const width of [24, 40, 100]) {
@@ -664,6 +667,18 @@ describe('pi 组件终端', () => {
       expect(lines.every(line => visibleWidth(line) <= width)).toBe(true)
       expect(app.render()).toContain('中文标题')
     }
+    await exit(app)
+  })
+
+  it('输入框保留光标，脚注显示上下文占用百分比', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ model: 'test-model',
+      usage: { input: 1000, output: 200, cacheRead: 0, total: 1200, context: 64000, window: 128000 } })
+    const app = launch(controller)
+    // 光标是 TUI 的协议序列，不能被脱敏器当成注入剥掉。
+    const editor = app.screen?.children.find(child => child instanceof Editor) as Editor
+    expect(editor.render(100).join('')).toContain('\x1b_pi:fc')
+    expect(app.render()).toContain('50%/128k')
     await exit(app)
   })
 

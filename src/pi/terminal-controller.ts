@@ -223,6 +223,25 @@ export async function createTerminalController(options: {
     }
     return entries
   }
+  /** Token usage of the agent in view, from the last assistant message of its transcript. */
+  const usage = (agent: Agent | undefined, fallback: TranscriptEntry[]) => {
+    const messages = agent?.state.messages ?? []
+    let input = 0, output = 0, cacheRead = 0
+    for (const message of messages) {
+      if (message.role !== 'assistant' || !('usage' in message) || !message.usage) continue
+      input += message.usage.input ?? 0
+      output += message.usage.output ?? 0
+      cacheRead += message.usage.cacheRead ?? 0
+    }
+    // Context = what the next request carries: the last request's prompt plus its completion.
+    const last = messages.filter(message => message.role === 'assistant' && 'usage' in message && message.usage).at(-1)
+    const context = last && 'usage' in last && last.usage
+      ? (last.usage.input ?? 0) + (last.usage.cacheRead ?? 0) + (last.usage.cacheWrite ?? 0) + (last.usage.output ?? 0)
+      : 0
+    const window = agent?.state.model?.contextWindow ?? 0
+    if (!messages.length && fallback.length) return { input: 0, output: 0, cacheRead: 0, total: 0, context: 0, window }
+    return { input, output, cacheRead, total: input + output, context, window }
+  }
   const snapshot = (): TerminalSnapshot => {
     if (closed && finalSnapshot) return structuredClone(finalSnapshot)
     const tickets = runtime.store.tickets.list()
@@ -238,6 +257,7 @@ export async function createTerminalController(options: {
       attention: tickets.filter(item => !item.ended && item.attention).length,
       health: { ...structuredClone(runtime.health()), ...(dialogueHealth ? { dialogue: structuredClone(dialogueHealth) } : {}) },
       history: transcript(),
+      usage: mode === 'coding' ? usage(coding, []) : usage(dialogue, []),
     }
   }
   const publish = () => { if (!closing) { reportFailures(); emit({ type: 'snapshot', value: snapshot() }) } }

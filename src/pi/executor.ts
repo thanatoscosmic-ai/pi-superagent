@@ -292,7 +292,8 @@ export class PiExecutor implements Executor {
         if (event.message.role === 'assistant' && event.message.stopReason === 'error') worker.error = this.errorText(event.message.errorMessage ?? '模型执行失败。')
         this.flush(worker)
       }
-      if (event.type === 'tool_execution_end' && event.isError) worker.error = '工具执行失败。'
+      // A failed tool call is information the model acts on, not a failed assignment: reading a missing path, a rejected
+      // path or a non-zero shell exit must let the worker continue. Only the run itself failing ends the ticket.
       if (event.type === 'turn_end') {
         worker.turns++
         const maxTurns = Math.max(1, this.host.config.maxTurns ?? 100)
