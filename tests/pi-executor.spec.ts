@@ -721,4 +721,19 @@ describe('Pi 执行器', () => {
     await host.executor.idle()
     expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('轮数达到上限') })
   })
+
+  it('默认不限制轮数：超过一百轮仍继续，直到真正报告结果', async () => {
+    let calls = 0
+    const host = harness(() => {
+      // 150 tool rounds, far past the old 100 cap, then a real report.
+      if (++calls <= 150) return call('orchestrator_read', {})
+      return call('orchestrator_report', { state: 'ready', summary: '长任务完成' })
+    })
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    expect(calls).toBe(151)
+    expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report?.state).toBe('ready')
+    expect(host.store.tickets.get(ticket.id)?.ended?.outcome).toBe('completed')
+  })
 })

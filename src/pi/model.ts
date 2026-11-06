@@ -20,6 +20,18 @@ export interface CreatePiAgentOptions {
   streamFn?: PiStreamFn
 }
 
+/**
+ * The context window assumed for the configured model, in tokens. It decides when the transcript is compacted and how full
+ * the footer says the context is, so it describes the deployment's provider, not a fixed model: `OPENAI_CONTEXT_WINDOW`
+ * overrides it when a gateway offers more or less than the default.
+ */
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000
+
+function contextWindow(): number {
+  const configured = Number(process.env.OPENAI_CONTEXT_WINDOW?.trim())
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_CONTEXT_WINDOW
+}
+
 /** The window the configured model reports, so a screen can show how full its context is before any request ran. */
 export function configuredWindow(roleModel?: import('../policy.ts').RoleModel | null): number {
   try { return environmentModel(roleModel).contextWindow } catch { return 0 }
@@ -50,7 +62,7 @@ function environmentModel(roleModel?: import('../policy.ts').RoleModel | null): 
     reasoning: hasEffort || /reasoner|(?:^|[-_/])r1(?:$|[-_/])/i.test(id),
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
+    contextWindow: contextWindow(),
     maxTokens: 8192,
     compat: {
       supportsStore: false,

@@ -318,10 +318,14 @@ export class PiExecutor implements Executor {
       }
       // A failed tool call is information the model acts on, not a failed assignment: reading a missing path, a rejected
       // path or a non-zero shell exit must let the worker continue. Only the run itself failing ends the ticket.
+      //
+      // There is no turn cap by default: a real ticket can need hundreds of steps, and stopping it mid-work reported a
+      // failure the person had to retry by hand. A cap set through `maxTurns` still applies, and the thirty-minute timer
+      // bounds a run that never finishes.
       if (event.type === 'turn_end') {
         worker.turns++
-        const maxTurns = Math.max(1, this.host.config.maxTurns ?? 100)
-        if (worker.turns >= maxTurns && this.current(ticket.id, worker.assignmentId)) {
+        const maxTurns = this.host.config.maxTurns
+        if (maxTurns !== undefined && worker.turns >= maxTurns && this.current(ticket.id, worker.assignmentId)) {
           worker.error = `执行轮数达到上限（${maxTurns}）。`
           agent.abort()
         }

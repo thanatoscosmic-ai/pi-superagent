@@ -16,6 +16,7 @@ export interface RuntimeConfig {
   stateDir: string
   repositoryDirectory: string
   allowShell?: boolean
+  /** A cap on a worker's turns; unset means no cap, which suits real tickets that can take hundreds of steps. */
   maxTurns?: number
   agentFactory?: AgentFactory
   assess?: (candidate: Candidate) => Promise<import('../policy.ts').Assessment>

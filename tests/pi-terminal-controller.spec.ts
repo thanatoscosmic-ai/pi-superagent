@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createTerminalController, type TerminalController, type TerminalEvent } from '../src/pi/terminal-controller.ts'
+import { DEFAULT_CONTEXT_WINDOW, configuredWindow } from '../src/pi/model.ts'
 import type { AgentFactory, AgentOptions } from '../src/pi/types.ts'
 import type { Assessment } from '../src/policy.ts'
 
@@ -652,12 +653,24 @@ describe('TerminalController 真实领域运行', () => {
     vi.stubEnv('OPENAI_MODEL', 'deepseek-chat')
     const h = await setup()
     // Before any request the footer still names the window; the agent that would report it does not exist yet.
-    expect(h.controller.snapshot().usage.window).toBe(128000)
+    expect(h.controller.snapshot().usage.window).toBe(DEFAULT_CONTEXT_WINDOW)
     await h.controller.submit('把 message.txt 改为 fixed')
     await h.settled()
     const { usage } = h.controller.snapshot()
     expect(usage.window).toBeGreaterThan(0)
     expect(usage.context).toBeGreaterThanOrEqual(0)
+  })
+
+  it('OPENAI_CONTEXT_WINDOW 可覆盖默认窗口，非法值回落默认', async () => {
+    vi.stubEnv('OPENAI_BASE_URL', 'https://api.deepseek.com/v1')
+    vi.stubEnv('OPENAI_MODEL', 'deepseek-chat')
+    vi.stubEnv('OPENAI_CONTEXT_WINDOW', '2000000')
+    const h = await setup()
+    expect(h.controller.snapshot().usage.window).toBe(2_000_000)
+    for (const bad of ['0', '-1', 'abc', '']) {
+      vi.stubEnv('OPENAI_CONTEXT_WINDOW', bad)
+      expect(configuredWindow(null)).toBe(DEFAULT_CONTEXT_WINDOW)
+    }
   })
 
   it('direct coding 可在非 Git 启动，切 tickets 验证仓库且不丢上下文', async () => {
