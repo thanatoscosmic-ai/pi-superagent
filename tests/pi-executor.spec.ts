@@ -36,11 +36,14 @@ function response(content: AssistantMessage['content'], error?: string): Assista
 function call(name: string, args: Extract<AssistantMessage['content'][number], { type: 'toolCall' }>['arguments']): AssistantMessageEventStream {
   return response([{ type: 'toolCall', id: `call-${name}`, name, arguments: args }])
 }
-/** An answer the output limit cut off: the model stopped mid-sentence and asked nothing of anyone. */
+/**
+ * An answer the output limit cut off: the model stopped mid-sentence and asked nothing of anyone. The output ends below the
+ * model's own limit, which is how pi tells a truncated reply from one that merely reached its configured cap.
+ */
 function truncated(content: AssistantMessage['content'], usage?: { input: number; output: number }): AssistantMessageEventStream {
   const stream = new AssistantMessageEventStream()
   const input = usage?.input ?? 0
-  const output = usage?.output ?? model.maxTokens
+  const output = usage?.output ?? 0
   const message: AssistantMessage = {
     role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
     stopReason: 'length',
@@ -387,17 +390,17 @@ describe('Pi 执行器', () => {
     host.effects.start()
     await host.executor.idle()
     const report = latestAssignment(host.store.tickets.get(ticket.id)!)?.report
-    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('长度上限') })
+    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('被截断') })
     expect(host.factory.mock.calls.length).toBe(1)
   })
 
-  it('上下文接近窗口上限导致的截断说明真实原因', async () => {
-    const host = harness(() => truncated([{ type: 'text', text: '' }], { input: model.contextWindow - 200, output: 1 }))
+  it('上下文接近窗口上限导致的截断同样续一轮，仍失败时说明原因', async () => {
+    const host = harness(() => truncated([{ type: 'text', text: '' }], { input: model.contextWindow, output: 1 }))
     const ticket = host.accept()
     host.effects.start()
     await host.executor.idle()
     const report = latestAssignment(host.store.tickets.get(ticket.id)!)?.report
-    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('上下文窗口') })
+    expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('压缩上下文后仍未完成') })
   })
 
   it('三十分钟超时取消并报告 failed', async () => {

@@ -2,8 +2,8 @@ import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Agent } from '@earendil-works/pi-agent-core'
-import type { AssistantMessage } from '@earendil-works/pi-ai'
+import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
+import { contentText, type AssistantMessage } from '@earendil-works/pi-ai'
 import { AssistantMessageEventStream } from '@earendil-works/pi-ai/utils/event-stream'
 import { obj } from '@earendil-works/pi-schema'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -262,5 +262,55 @@ describe('模型工厂', () => {
     await roleAgent.prompt('测试推理配置')
     expect(requests).toHaveLength(2)
     expect(requests[1]).toMatchObject({ path: '/v1/chat/completions', auth: 'Bearer offline-test-token', body: { model: 'o3', reasoning_effort: 'high', stream: true } })
+  })
+
+  it('上下文超过窗口时先摘要旧消息再请求，并把压缩后的记录写回会话', async () => {
+    const small: PiModel = { ...offlineModel, contextWindow: 30000, maxTokens: 8000 }
+    const prompts: string[] = []
+    const streamFn = vi.fn<PiStreamFn>((_model, context) => {
+      const last = context.messages.at(-1)
+      const text = typeof last?.content === 'string' ? last.content : contentText(last?.content ?? [], '')
+      prompts.push(text)
+      // The summary request carries a conversation dump; the real request asks the model to continue.
+      return response(message(small, [{ type: 'text', text: text.includes('<conversation>') ? '## 目标\n压缩后的摘要' : '继续完成' }]))
+    })
+    const history: AgentMessage[] = Array.from({ length: 6 }, (_, index) => [
+      { role: 'user' as const, content: `请求 ${index}：${'字'.repeat(3000)}`, timestamp: index * 2 },
+      message(small, [{ type: 'text', text: `回答 ${index}：${'字'.repeat(3000)}` }]),
+    ]).flat()
+    const agent = createPiAgent({ systemPrompt: '测试', tools: [], messages: history, model: small, streamFn })
+    await agent.prompt('继续')
+    // One summary request, then the request it made room for.
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0]).toContain('<conversation>')
+    expect(prompts[1]).not.toContain('<conversation>')
+    const kept = agent.state.messages
+    expect(JSON.stringify(kept)).toContain('压缩后的摘要')
+    expect(kept.some(item => JSON.stringify(item).includes('请求 0'))).toBe(false)
+    expect(kept.at(-1)).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: '继续完成' }] })
+  })
+
+  it('摘要在输出上限处被截断时拒绝采用，不写入不完整的检查点', async () => {
+    const small: PiModel = { ...offlineModel, contextWindow: 30000, maxTokens: 8000 }
+    const streamFn = vi.fn<PiStreamFn>((_model, context) => {
+      const text = contentText(context.messages.at(-1)?.content ?? [], '')
+      if (text.includes('<conversation>')) {
+        const cut = message(small, [{ type: 'text', text: '## 目标\n不完整的检查点' }])
+        cut.stopReason = 'length'
+        return response(cut)
+      }
+      return response(message(small, [{ type: 'text', text: '继续' }]))
+    })
+    const history: AgentMessage[] = Array.from({ length: 6 }, (_, index) => [
+      { role: 'user' as const, content: `请求 ${index}：${'字'.repeat(3000)}`, timestamp: index * 2 },
+      message(small, [{ type: 'text', text: `回答 ${index}：${'字'.repeat(3000)}` }]),
+    ]).flat()
+    const agent = createPiAgent({ systemPrompt: '测试', tools: [], messages: history, model: small, streamFn })
+    // The run ends with the failure recorded, which the executor reports rather than continuing on a stale transcript.
+    await agent.prompt('继续')
+    expect(agent.state.errorMessage).toContain('未采用不完整的摘要')
+    // The archive of the run is untouched: the refused checkpoint never became the transcript's head.
+    const firstUser = agent.state.messages.find(item => item.role === 'user')
+    expect(String(firstUser?.content)).toContain('请求 0')
   })
 })

@@ -1,7 +1,7 @@
 import { Agent, type AgentMessage, type AgentOptions, type AgentTool, type StreamFn, type ThinkingLevel } from '@earendil-works/pi-agent-core'
-import { getSupportedThinkingLevels, lazyStream, type Model } from '@earendil-works/pi-ai'
+import { getSupportedThinkingLevels, lazyStream, normalizeContext, type Model } from '@earendil-works/pi-ai'
 import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
-import { trimMessages } from './context.js'
+import { compactIfNeeded, readSummary } from './context.js'
 import { codingTools } from './tools.js'
 
 export type PiModel = Model<'openai-completions'>
@@ -92,7 +92,7 @@ export function createPiAgent(options: CreatePiAgentOptions): Agent {
   }
   const streamFn: PiStreamFn = options.streamFn ?? ((selectedModel, context, streamOptions) =>
     lazyStream(selectedModel, async () => streamSimple(selectedModel as PiModel, context, { ...streamOptions, apiKey })))
-  return new Agent({
+  const agent: Agent = new Agent({
     initialState: {
       systemPrompt: options.systemPrompt,
       model,
@@ -103,10 +103,24 @@ export function createPiAgent(options: CreatePiAgentOptions): Agent {
     streamFn,
     getApiKey: () => apiKey,
     beforeToolCall: options.beforeToolCall,
-    // Keep every request inside the window: pi clamps the answer to what is left, and a transcript at the brim would leave
-    // a one-token answer that stops on `length` without ever reporting.
-    transformContext: async messages => trimMessages(messages, model.contextWindow),
     toolExecution: 'sequential',
     transport: 'sse',
   })
+  // pi compacts before a request that would overrun the window: the answer keeps `reserveTokens`, and the older turns
+  // become one summary of the transcript itself. Without this the provider clamps the answer to whatever is left, which can
+  // be one token — a turn that stops on `length` and reports nothing.
+  //
+  // The compacted transcript replaces the agent's own, so it is written to the session and the next turn does not summarize
+  // the same history again. Returning it as the request context keeps the run in step within this turn.
+  agent.prepareRequest = async (request, signal) => {
+    const result = await compactIfNeeded(request.context.messages, model.contextWindow, async (systemPrompt, prompt) => {
+      const context = normalizeContext({ systemPrompt, messages: [{ role: 'user', content: [{ type: 'text', text: prompt }], timestamp: Date.now() }] })
+      const response = await streamFn(model, context, { apiKey, signal })
+      return readSummary(await response.result())
+    })
+    if (!result) return undefined
+    agent.state.messages = result.messages
+    return { context: { ...request.context, messages: result.messages } }
+  }
+  return agent
 }
