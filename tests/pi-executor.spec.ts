@@ -443,20 +443,30 @@ describe('Pi 执行器', () => {
     })
   })
 
-  it('三十分钟超时取消并报告 failed', async () => {
+  it('没有执行时长上限：一轮跑过三十分钟仍继续，不判失败', async () => {
     const entered = deferred()
-    const host = harness(async (_model, _context, options) => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const host = harness(async (_model, _context) => {
       entered.resolve()
-      await new Promise<void>(done => options?.signal?.addEventListener('abort', () => done(), { once: true }))
-      return response([])
+      await gate
+      return call('orchestrator_report', { state: 'ready', summary: '长任务完成' })
     })
     const ticket = host.accept()
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    host.effects.start()
-    await entered.promise
-    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
-    await host.executor.idle()
-    expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report).toMatchObject({ state: 'failed', summary: expect.stringContaining('三十分钟') })
+    try {
+      host.effects.start()
+      await entered.promise
+      // Well past the old thirty-minute limit the run is still going, not reported failed.
+      await vi.advanceTimersByTimeAsync(90 * 60 * 1000)
+      expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report).toBeUndefined()
+      expect(host.store.tickets.get(ticket.id)?.ended).toBeUndefined()
+      release()
+      await vi.advanceTimersByTimeAsync(1000)
+      await host.executor.idle()
+      expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report?.state).toBe('ready')
+      expect(host.store.tickets.get(ticket.id)?.ended?.outcome).toBe('completed')
+    } finally { vi.useRealTimers() }
   })
 
   it('将 executor.model 原样传入 agentFactory 的 roleModel', async () => {

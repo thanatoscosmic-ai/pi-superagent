@@ -445,7 +445,9 @@ export class PiExecutor implements Executor {
       this.flush(worker)
     }
     if (!messages.length) messages.push({ role: 'user', content: '恢复当前工单，检查既有状态，避免重复外部操作，并明确报告状态。', timestamp: Date.now() })
-    const timer = setTimeout(() => { worker.error = '执行超过三十分钟，已中止。'; worker.agent.abort() }, 30 * 60 * 1000)
+    // No wall-clock limit: a real ticket can take hours, and cutting it off mid-work reported a failure the person had to
+    // retry by hand, losing whatever the turn had done since. A run ends when the worker reports, when a person stops or
+    // deletes the ticket, or when the person interrupts it.
     let interrupted = false
     /**
      * Whether the last answer stopped short instead of finishing its turn. pi's two tests: an error or silent overflow past
@@ -501,7 +503,6 @@ export class PiExecutor implements Executor {
       } catch (error) {
         worker.error = `执行失败：${this.errorText(error)}`
       } finally {
-        clearTimeout(timer)
         interrupted ||= !!worker.paused || this.host.paused()
         if (interrupted) worker.error = undefined
         this.flush(worker)
