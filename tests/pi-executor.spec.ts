@@ -403,6 +403,46 @@ describe('Pi 执行器', () => {
     expect(report).toMatchObject({ state: 'failed', summary: expect.stringContaining('压缩上下文后仍未完成') })
   })
 
+  it('临时性失败（429）按退避重试，同一轮继续直到成功而不是把工单报成 failed', async () => {
+    let calls = 0
+    const retries: [string, number, number][] = []
+    const host = harness(() => {
+      if (++calls <= 2) return response([], '429: {"message":"token 消耗速率过高，请稍后重试。","type":"rate_limit_error"}')
+      return call('orchestrator_report', { state: 'ready', summary: '限流恢复后完成' })
+    }, { retries: 3, retryBackoffMs: 1, onRetry: (ticketId, reason, attempt, delay) => { retries.push([ticketId, attempt, delay]) } })
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    // 两次临时失败后第三次成功：没有新增 Assignment，也没有失败的 report。
+    expect(retries.map(([, attempt]) => attempt)).toEqual([1, 2])
+    expect(host.factory).toHaveBeenCalledOnce()
+    const report = latestAssignment(host.store.tickets.get(ticket.id)!)?.report
+    expect(report?.state).toBe('ready')
+    expect(host.store.tickets.get(ticket.id)?.ended?.outcome).toBe('completed')
+  })
+
+  it('重试耗尽后仍为临时性错误时如实报告 failed', async () => {
+    const host = harness(() => response([], '503: service unavailable'), { retries: 2, retryBackoffMs: 1 })
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report).toMatchObject({
+      state: 'failed', summary: expect.stringContaining('503'),
+    })
+  })
+
+  it('非临时性失败（401）不重试，立即报告 failed', async () => {
+    let calls = 0
+    const host = harness(() => { calls++; return response([], '401: invalid api key') }, { retries: 5, retryBackoffMs: 1 })
+    const ticket = host.accept()
+    host.effects.start()
+    await host.executor.idle()
+    expect(calls).toBe(1)
+    expect(latestAssignment(host.store.tickets.get(ticket.id)!)?.report).toMatchObject({
+      state: 'failed', summary: expect.stringContaining('401'),
+    })
+  })
+
   it('三十分钟超时取消并报告 failed', async () => {
     const entered = deferred()
     const host = harness(async (_model, _context, options) => {

@@ -3,7 +3,7 @@ import { lstat, mkdir, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import type { Agent, AgentMessage, AgentTool } from '@earendil-works/pi-agent-core'
-import { isContextOverflow, isRecoverableLength } from '@earendil-works/pi-ai'
+import { isContextOverflow, isRecoverableLength, isRetryableAssistantError } from '@earendil-works/pi-ai'
 import { z } from 'zod'
 import { Engine, latestAssignment, liveTicket, runningAssignment } from '../core/index.ts'
 import type { AssessmentOutcome, Assignment, Executor, Ticket, TicketInput, WorkerReport } from '../core/index.ts'
@@ -13,6 +13,11 @@ import { codingTools } from './tools.ts'
 import type { AgentFactory, RuntimeConfig } from './types.ts'
 
 const git = promisify(execFile)
+/** Retries of a turn that failed for a passing reason: `docs/003` requires a growing backoff, and 10 keeps a throttled window recoverable. */
+const TRANSIENT_TRIES = 10
+/** The first wait before a retried turn; each later one doubles, up to a minute. */
+const TRANSIENT_BACKOFF_MS = 10_000
+const MAX_BACKOFF_MS = 60_000
 const refSchema = z.object({ source: z.string().min(1), id: z.string().min(1) })
 const reportSchema = z.object({
   state: z.enum(['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped']),
@@ -460,12 +465,34 @@ export class PiExecutor implements Executor {
           await worker.agent.prompt(next)
           await worker.agent.waitForIdle()
           if (worker.agent.state.errorMessage && !worker.error) worker.error = this.errorText(worker.agent.state.errorMessage)
-          if (worker.error || worker.paused || this.host.paused() || worker.reported || !truncated()) break
+          if (worker.error || worker.paused || this.host.paused() || worker.reported) break
+          if (!truncated()) break
           if (attempt >= 1 || !this.current(worker.ticketId, assignmentId)) {
             worker.error = '回答在长度上限处被截断，压缩上下文后仍未完成。请拆分任务或缩小范围后重试。'
             break
           }
           next = [{ role: 'user', content: '上一轮回答在长度上限处被截断，未能完成。上下文已压缩；请接着说明已完成的部分，然后继续用工具推进，需要汇报时调用 orchestrator_report。', timestamp: Date.now() }]
+        }
+        // A provider or transport failure that passes, such as an HTTP 429 or a reset connection, is not the ticket's failure:
+        // it is retried with a growing backoff, as `docs/003` says and as the DSH executor does. The same turn goes on where
+        // it stopped, in the same Session, so the work it already did is not lost.
+        for (let attempt = 1; this.transient(worker) && !worker.reported && attempt <= this.retries(); attempt++) {
+          if (worker.paused || this.host.paused() || this.closing || !this.current(worker.ticketId, assignmentId)) return
+          const delay = this.backoff() * 2 ** (attempt - 1)
+          this.host.config.onRetry?.(worker.ticketId, worker.error ?? '临时性错误', attempt, delay)
+          await this.sleep(delay)
+          if (worker.paused || this.host.paused() || this.closing) { interrupted = true; return }
+          if (!this.current(worker.ticketId, assignmentId) || worker.reported) return
+          // The failed attempt stays in the transcript as what it was; the retry is a fresh turn that goes on from there.
+          worker.error = undefined
+          await worker.agent.prompt(`上一轮因临时性错误中断（第 ${attempt}/${this.retries()} 次重试）。请从中断处继续，避免重复外部操作。`)
+          await worker.agent.waitForIdle()
+          if (worker.agent.state.errorMessage && !worker.error) worker.error = this.errorText(worker.agent.state.errorMessage)
+        }
+        // Retries ran out on a passing failure: the ticket is throttled, not broken. Say so, so the next message or retry
+        // starts from the same Session rather than from a wrongly failed assignment.
+        if (this.transient(worker)) {
+          worker.error = `模型服务持续拒绝或不可用（已重试 ${this.retries()} 次）：${worker.error ?? '临时性错误'}。请稍后重试本工单。`
         }
       } catch (error) {
         worker.error = `执行失败：${this.errorText(error)}`
@@ -510,6 +537,43 @@ export class PiExecutor implements Executor {
     }
     if (report.answers) this.host.engine().reply({ purpose: 'answer', ticketId, triggerId: report.answers, text: summary })
     return ticket
+  }
+
+  /**
+   * Whether the worker's last answer failed for a passing reason: a throttled, overloaded or unreachable provider, which the
+   * next attempt may well get through, as opposed to a refusal, a bad request or an exhausted quota that will fail again
+   * the same way. pi's own classifier decides, so a provider error is judged once, in one place.
+   */
+  private transient(worker: Worker): boolean {
+    const last = worker.agent.state.messages.findLast(message => message.role === 'assistant')
+    if (!last || last.role !== 'assistant') return false
+    return isRetryableAssistantError(last)
+  }
+
+  /** How many times a passing failure is retried before the ticket reports it. */
+  private retries(): number {
+    return Math.max(0, this.host.config.retries ?? TRANSIENT_TRIES)
+  }
+
+  /** The wait before the first retried turn. */
+  private backoff(): number {
+    return Math.max(0, this.host.config.retryBackoffMs ?? TRANSIENT_BACKOFF_MS)
+  }
+
+  /** Wait before a retried turn, giving up early when the executor is paused or shut down meanwhile. */
+  private sleep(ms: number): Promise<void> {
+    const wait = Math.min(ms, MAX_BACKOFF_MS)
+    return new Promise(resolve => {
+      const timer = setTimeout(finish, wait)
+      timer.unref?.()
+      const check = setInterval(() => { if (this.closing || this.host.paused()) finish() }, 250)
+      check.unref?.()
+      function finish() {
+        clearTimeout(timer)
+        clearInterval(check)
+        resolve()
+      }
+    })
   }
 
   private errorText(error: unknown): string {

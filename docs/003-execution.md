@@ -121,7 +121,7 @@ Sources poll subscribed Threads while a live Ticket subscribes, and for two week
 
 When an Executor Session reports `blocked` or `failed`, or fails to start or errors, which records `failed`, the Ticket takes no automatic Input.
 
-A passing failure of the model provider or the network, an HTTP 408, 429 or 5xx or a refused, reset or timed-out connection, is tried again first, three times with a growing backoff: a launch runs again, and a worker whose turn failed is told to go on; a failed prepare command is not tried again.
+A passing failure of the model provider or the network, an HTTP 408, 429 or 5xx or a refused, reset or timed-out connection, is tried again first, ten times with a growing backoff that starts at ten seconds and doubles up to a minute: a launch runs again, and a worker whose turn failed is told to go on from where it stopped, in the same Session; a failed prepare command is not tried again. The worker's queue reports each retry, so a throttled ticket shows that it is waiting rather than looking stuck.
 
 Once failed, CI and bot messages are recorded on it, but they are not delivered and do not wake the Session.
 

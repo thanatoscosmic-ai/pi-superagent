@@ -67,6 +67,8 @@ export async function createTerminalController(options: {
   const factory = options.agentFactory ?? createPiAgent
   const listeners = new Set<(event: TerminalEvent) => void>()
   const activeWorkers = new Set<string>()
+  /** What each ticket's worker has used, from its own assistant messages; the footer shows the worker's window, not the chat's. */
+  const workerUsage = new Map<string, { input: number; output: number; cacheRead: number; context: number; window: number }>()
   const failures = new Map<string, string>()
   const secrets = new Set<string>()
   const sanitize = (value: unknown): unknown => {
@@ -143,7 +145,7 @@ export async function createTerminalController(options: {
     onDomainEvent: event => {
       pinPermissions()
       // A deleted ticket's worker is unsubscribed, so its `agent_end` never arrives: drop its slot here.
-      if (event.type === 'ticket.deleted') activeWorkers.delete(event.data.ticketId)
+      if (event.type === 'ticket.deleted') { activeWorkers.delete(event.data.ticketId); workerUsage.delete(event.data.ticketId) }
       emit({ type: 'domain', value: event })
       reportFailures()
       if (event.type === 'decision.recorded' && !closing) {
@@ -168,7 +170,26 @@ export async function createTerminalController(options: {
     onAgentEvent: (ticketId, event) => {
       if (event.type === 'agent_start') activeWorkers.add(ticketId)
       if (event.type === 'agent_end') activeWorkers.delete(ticketId)
+      // A worker's usage arrives with its assistant messages; record the running total so the footer can show it.
+      if (event.type === 'message_end' && event.message.role === 'assistant' && 'usage' in event.message && event.message.usage) {
+        const message = event.message
+        const current = workerUsage.get(ticketId) ?? { input: 0, output: 0, cacheRead: 0, context: 0, window: 0 }
+        const usage = message.usage
+        workerUsage.set(ticketId, {
+          input: current.input + (usage.input ?? 0),
+          output: current.output + (usage.output ?? 0),
+          cacheRead: current.cacheRead + (usage.cacheRead ?? 0),
+          // Context = what the next request carries: this request's prompt plus its completion.
+          context: (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) + (usage.output ?? 0),
+          window: current.window || configured(),
+        })
+      }
       emit({ type: 'agent', ticketId, value: event })
+    },
+    /** A throttled or overloaded provider is retried; say so instead of looking stuck. */
+    onRetry: (ticketId, reason, attempt, delayMs) => {
+      notice(`工单 ${ticketId.slice(0, 8)} 临时失败（${reason.slice(0, 120)}），${Math.round(delayMs / 1000)} 秒后第 ${attempt}/10 次重试。`)
+      publish()
     },
   })
   const setupRuntime = () => {
@@ -235,8 +256,28 @@ export async function createTerminalController(options: {
       return source ? (JSON.parse(String(source.messages)) as AgentMessage[]).filter(message => message.role !== 'system') : []
     } catch { return [] }
   }
-  /** Token usage of the agent in view, from the last assistant message of its transcript; the stored one when it is idle. */
-  const usage = (agent: Agent | undefined, stored: () => AgentMessage[]) => {
+  /**
+   * Which worker's context window the footer speaks for: the one running now, else the newest live ticket that has run. A
+   * worker runs in its own agent, so its messages never reach the conversation's transcript, and without this the footer
+   * reported 0% while a ticket executed.
+   */
+  const workerInView = (tickets: Ticket[]): string | undefined => {
+    const live = tickets.filter(ticket => !ticket.ended).map(ticket => ticket.id)
+    const running = [...activeWorkers].filter(id => live.includes(id)).at(-1)
+    if (running) return running
+    return live.filter(id => workerUsage.has(id)).at(-1)
+  }
+  /**
+   * Token usage of what the footer speaks for: a ticket's worker while work is in view, else the conversation agent.
+   */
+  const usage = (agent: Agent | undefined, stored: () => AgentMessage[], tickets: Ticket[]) => {
+    const ticketId = workerInView(tickets)
+    const worker = ticketId ? workerUsage.get(ticketId) : undefined
+    if (worker) {
+      const window = worker.window || configured()
+      return { input: worker.input, output: worker.output, cacheRead: worker.cacheRead,
+        total: worker.input + worker.output, context: worker.context, window }
+    }
     const messages = agent?.state.messages?.length ? agent.state.messages : stored()
     let input = 0, output = 0, cacheRead = 0
     for (const message of messages) {
@@ -273,7 +314,7 @@ export async function createTerminalController(options: {
       attention: tickets.filter(item => !item.ended && item.attention).length,
       health: { ...structuredClone(runtime.health()), ...(dialogueHealth ? { dialogue: structuredClone(dialogueHealth) } : {}) },
       history: transcript(),
-      usage: mode === 'coding' ? usage(coding, stored) : usage(dialogue, stored),
+      usage: usage(mode === 'coding' ? coding : dialogue, stored, tickets),
     }
   }
   const publish = () => { if (!closing) { reportFailures(); emit({ type: 'snapshot', value: snapshot() }) } }
