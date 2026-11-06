@@ -19,7 +19,7 @@ beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'pi-server-'))
   store = new Store(join(directory, 'store.sqlite'))
   store.tickets.save(ticket)
-  host = { store, health: vi.fn(() => ({ healthy: true })), receive: vi.fn(), stopTicket: vi.fn(), retryTicket: vi.fn(), pause: vi.fn() }
+  host = { store, health: vi.fn(() => ({ healthy: true })), receive: vi.fn(), stopTicket: vi.fn(), retryTicket: vi.fn(), deleteTicket: vi.fn(), pause: vi.fn() }
   server = await startServer(host, { token })
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('Missing server address')

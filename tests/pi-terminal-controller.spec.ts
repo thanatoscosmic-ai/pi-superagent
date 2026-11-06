@@ -422,6 +422,32 @@ describe('TerminalController 真实领域运行', () => {
     await expect(h.controller.command(`/retry ${failed.id}`)).rejects.toThrow()
   })
 
+  it('删除运行中的工单：停止其执行、移除记录并保留工作目录，且不会重新排队', async () => {
+    const h = await setup()
+    h.provider.setResponses(waiting())
+    await h.controller.submit('修改文件')
+    await h.settled()
+    const ticket = required(h.controller.snapshot().tickets[0])
+    const directory = required(ticket.execution).directory
+    // 该工单仍处于运行中的 Assignment，是「执行中的工单」。
+    expect(ticket.assignments.at(-1)?.state).toBe('running')
+    const ended = vi.fn()
+    h.controller.subscribe(event => { if (event.type === 'domain' && event.value.type === 'ticket.ended') ended() })
+    const result = await h.controller.command(`/delete ${ticket.id}`)
+    expect(String(result)).toContain('已删除工单')
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    expect(ended).toHaveBeenCalled()
+    expect(existsSync(directory)).toBe(true)
+    // 记录不再出现，消息也不会作为新工单回到评估。
+    await h.settled()
+    expect(h.controller.snapshot().tickets).toHaveLength(0)
+    expect(h.query('SELECT * FROM ticket')).toHaveLength(0)
+    expect(await h.controller.command(`/ticket ${ticket.id}`).catch(error => String(error))).toContain('未知工单')
+    // 它的 worker 已被丢弃，运行计数随之归零，而不是一直显示「执行中」。
+    expect(h.controller.snapshot()).toMatchObject({ running: 0, tickets: [] })
+    expect(h.query('SELECT * FROM pi_session')).toHaveLength(0)
+  })
+
   it('coding 直接编辑、事件标记、JSON 脱敏，模式切换不结束等待工单', async () => {
     const h = await setup()
     h.provider.setResponses(waiting())

@@ -426,7 +426,7 @@ describe('pi 组件终端', () => {
     await exit(app)
   })
 
-  it('暂停时显示静态暂停提示，Escape 不被忙状态卡住', async () => {
+  it('暂停时显示静态暂停提示，Escape 不退出', async () => {
     const controller = new FakeController()
     controller.value = snapshot({ running: 1, paused: true })
     const app = launch(controller)
@@ -434,12 +434,13 @@ describe('pi 组件终端', () => {
     expect(app.render()).not.toContain('工作中')
     expect(app.render()).not.toContain('评估中')
     app.terminal.input('\x1b')
-    await app.session
+    await flush()
     expect(controller.interrupt).not.toHaveBeenCalled()
-    expect(controller.close).toHaveBeenCalledTimes(1)
+    expect(controller.close).not.toHaveBeenCalled()
+    await exit(app)
   })
 
-  it.each(['running', 'evaluating'] as const)('snapshot %s 忙时 Escape 中断不退出，闲时 Escape 退出', async field => {
+  it.each(['running', 'evaluating', 'queued'] as const)('snapshot %s 忙时 Escape 中断；闲置时 Escape 也不退出', async field => {
     const controller = new FakeController()
     controller.value = snapshot({ [field]: 1 })
     controller.interrupt.mockImplementation(async () => { controller.emit({ type: 'snapshot', value: snapshot() }) })
@@ -449,11 +450,27 @@ describe('pi 组件终端', () => {
     expect(controller.interrupt).toHaveBeenCalledTimes(1)
     expect(controller.close).not.toHaveBeenCalled()
     app.terminal.input('\x1b')
-    await app.session
-    // 空闲时 Escape 直接退出，不再请求中断。
+    await flush()
+    // Escape 只负责中断：请求分几步执行，空闲的快照不等于可以退出。
     expect(controller.interrupt).toHaveBeenCalledTimes(1)
-    expect(controller.close).toHaveBeenCalledTimes(1)
-    expect(app.terminal.stopped).toBe(true)
+    expect(controller.close).not.toHaveBeenCalled()
+    expect(app.render()).toContain('没有正在执行的任务')
+    await exit(app)
+  })
+
+  it('Escape 在两步之间的空档也不退出会话', async () => {
+    const controller = new FakeController()
+    controller.value = snapshot({ running: 1 })
+    const app = launch(controller)
+    await flush()
+    // 工单已在运行，随后快照短暂显示 0（评估结束、执行尚未启动）。
+    controller.emit({ type: 'snapshot', value: snapshot() })
+    await flush()
+    app.terminal.input('\x1b')
+    await flush()
+    expect(controller.close).not.toHaveBeenCalled()
+    expect(controller.interrupt).not.toHaveBeenCalled()
+    await exit(app)
   })
 
   it('恢复工单历史、详情、状态并转发全部命令', async () => {

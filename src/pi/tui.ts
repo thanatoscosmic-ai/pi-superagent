@@ -135,13 +135,14 @@ const selectListTheme: SelectListTheme = {
 const editorTheme: EditorTheme = { borderColor: palette.dim, selectList: selectListTheme }
 
 /** `/ticket`, `/stop` and `/retry` complete against the tickets that exist, matching an id prefix. */
-const ticketCommands = new Set(['ticket', 'stop', 'retry'])
+const ticketCommands = new Set(['ticket', 'stop', 'delete', 'retry'])
 const commands = [
   { name: 'tickets', description: '工单列表和历史' },
   { name: 'ticket', description: '查看工单详情', argumentHint: '<id>' },
   { name: 'pause', description: '暂停调度' },
   { name: 'resume', description: '恢复调度' },
   { name: 'stop', description: '停止并撤销工单授权', argumentHint: '<id>' },
+  { name: 'delete', description: '删除工单记录', argumentHint: '<id>' },
   { name: 'retry', description: '重试工单', argumentHint: '<id>' },
   { name: 'mode', description: '切换模式', argumentHint: 'coding|tickets' },
   { name: 'shell', description: 'Shell 开关', argumentHint: 'on|off' },
@@ -609,7 +610,7 @@ class Header implements Component {
       ['@', '文件'],
       ['Ctrl+O', '工具'],
       ['Shift+Enter', '换行'],
-      ['/help', '帮助'],
+      ['Ctrl+C ×2', '退出'],
     ]
     let line = this.bottom
     for (const [key, label] of hints) {
@@ -832,12 +833,14 @@ export async function runTerminal(
     history.addChild(new SafeText(sanitize, text, palette.dim, 1))
     return margin
   }
+  /** Whether a person's request still has work: a running worker, an Eval, a queued launch, or a submit of this terminal. */
+  const work = (value: TerminalSnapshot): boolean =>
+    localBusy > 0 || activeAgents.size > 0 || value.running > 0 || value.evaluating > 0 || value.queued > 0
   const refresh = (value?: TerminalSnapshot) => {
     if (closing) return
     snapshot = value ?? controller.snapshot()
-    const active = localBusy > 0 || activeAgents.size > 0 || snapshot.running > 0 || snapshot.evaluating > 0
     // A paused host never starts work on its own, so it must say so even when nothing is running.
-    const busy = active && !snapshot.paused
+    const busy = work(snapshot) && !snapshot.paused
     editor.setWorking(snapshot.paused
       ? '已暂停 · 工单调度冻结；对话仍可回答（/resume 恢复）'
       : busy ? (snapshot.evaluating ? '评估中 (Esc 中断)' : '工作中 (Esc 中断)') : undefined)
@@ -1031,18 +1034,18 @@ export async function runTerminal(
       const command = rawCommand!.toLowerCase()
       const argument = rest[0]
       // A short id the person typed is resolved here, so the controller only ever sees a full id.
-      const resolved = argument && ['/stop', '/retry', '/ticket'].includes(command)
+      const resolved = argument && ['/stop', '/delete', '/retry', '/ticket'].includes(command)
         ? snapshot.tickets.find(item => item.id === argument)
           ?? snapshot.tickets.find(item => item.id.startsWith(argument.toLowerCase()))
         : undefined
       const forwarded = resolved ? `${command} ${resolved.id}` : text
-      if (command === '/stop' && argument) {
+      if ((command === '/stop' || command === '/delete') && argument) {
         if (!resolved) {
           notice(`未知工单：${argument}`)
           refresh()
           return
         }
-        if (resolved.ended) {
+        if (resolved.ended && command === '/stop') {
           notice(`这个工单已经结束（${ticketState(resolved)}），不需要再停止。`)
           refresh()
           return
@@ -1227,7 +1230,7 @@ export async function runTerminal(
       if (isKeyRelease(data)) return undefined
       const current = controller.snapshot()
       // A paused run has nothing to interrupt.
-      const busy = !current.paused && (current.running > 0 || current.evaluating > 0 || localBusy > 0 || activeAgents.size > 0)
+      const busy = !current.paused && work(current)
 
       // Ctrl+O expands or collapses every tool row, as it does in pi.
       if (matchesKey(data, 'ctrl+o')) {
@@ -1235,12 +1238,15 @@ export async function runTerminal(
         return { consume: true }
       }
 
-      // Escape interrupts work; with nothing running it exits, as the header advertises.
+      // Escape interrupts and never exits: a request runs in several steps, and the moment between them reports no work, so
+      // exiting there would end a session the person meant to keep. Ctrl+C twice, Ctrl+D, or /exit leaves.
+      // Escape interrupts and never exits, as in pi: a request runs in several steps, and the moment between them reports no
+      // work, so an Escape there would end a session the person meant to keep. Ctrl+C twice, Ctrl+D, or /exit leaves.
       if (matchesKey(data, 'escape')) {
         // Text or an open completion menu belongs to the editor; Escape cancels that first.
         if (editor.isShowingAutocomplete() || editor.getText().length > 0) return undefined
         if (busy) interrupt(true)
-        else close()
+        else notice('没有正在执行的任务。退出请用 Ctrl+C 两次、Ctrl+D 或 /exit。')
         return { consume: true }
       }
 

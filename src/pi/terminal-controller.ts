@@ -33,6 +33,7 @@ const help = [
   '  /ticket <id>       工单详情（省略 id 时取当前的）',
   '  /pause /resume     暂停或恢复调度',
   '  /stop <id>         停止工单并撤销授权',
+  '  /delete <id>       删除工单记录（运行中的先停止；工作目录保留）',
   '  /retry <id>        重试失败工单',
   '  /mode coding|tickets  切换编码/工单模式（仅空闲）',
   '  /shell on|off      开关命令执行（仅空闲，非沙箱）',
@@ -141,6 +142,8 @@ export async function createTerminalController(options: {
     },
     onDomainEvent: event => {
       pinPermissions()
+      // A deleted ticket's worker is unsubscribed, so its `agent_end` never arrives: drop its slot here.
+      if (event.type === 'ticket.deleted') activeWorkers.delete(event.data.ticketId)
       emit({ type: 'domain', value: event })
       reportFailures()
       if (event.type === 'decision.recorded' && !closing) {
@@ -555,7 +558,7 @@ export async function createTerminalController(options: {
         const [rawName, argument, ...extra] = text.trim().split(/\s+/)
         const name = rawName!.toLowerCase()
         const usage: Record<string, string> = {
-          '/ticket': '/ticket [工单 id]', '/stop': '/stop <工单 id>', '/retry': '/retry <工单 id>',
+          '/ticket': '/ticket [工单 id]', '/stop': '/stop <工单 id>', '/delete': '/delete <工单 id>', '/retry': '/retry <工单 id>',
           '/mode': '/mode coding|tickets', '/shell': '/shell on|off', '/pause': '/pause', '/resume': '/resume',
           '/new': '/new', '/help': '/help', '/tickets': '/tickets', '/status': '/status', '/exit': '/exit',
           '/debug': '/debug on|off（在 TUI 中本地处理）', '/tools': '/tools expand|collapse（在 TUI 中本地处理）',
@@ -577,6 +580,17 @@ export async function createTerminalController(options: {
           if (!ticket) throw new Error(`未知工单：${argument}`)
           result = JSON.stringify(ticket, null, 2)
         } else if (name === '/stop' && argument) { runtime.engine.stopTicket(argument, '终端用户停止'); kick(); result = `已停止工单 ${argument}` }
+        else if (name === '/delete' && argument) {
+          const ticket = runtime.store.tickets.get(argument)
+          if (!ticket) throw new Error(`未知工单：${argument}`)
+          if (!ticket.ended) {
+            // Ending first stops its turn through the ordinary path, so the record is never removed under a running worker.
+            runtime.engine.stopTicket(argument, '终端用户删除工单')
+          }
+          runtime.engine.deleteTicket(argument)
+          kick()
+          result = `已删除工单 ${argument}（工作目录保留在 ${ticket.execution?.directory ?? '未创建'}）`
+        }
         else if (name === '/retry' && argument) { runtime.engine.retryTicket(argument); kick(); result = `已重试工单 ${argument}` }
         else if ((name === '/pause' || name === '/resume') && !argument) {
           if (name === '/pause') { codingCancelled = true; coding?.abort(); await abortDialogue(); await codingTask }

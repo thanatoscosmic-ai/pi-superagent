@@ -259,6 +259,26 @@ describe('subscription fan-out', () => {
     expect(h.repo.tickets.get(ticketId)).toMatchObject({ ended: expect.anything(), undelivered: [] })
     expect(h.repo.tickets.get(ticketId)).not.toHaveProperty('delivery')
   })
+  it('deleting a ticket ends its work, frees its threads and never queues what it held again', async () => {
+    const h = harness()
+    const decision = accepted(h)
+    const ticketId = decision.ticketId!
+    h.engine.receive(trigger('2')); h.pump()
+    const before = h.repo.tickets.get(ticketId)!
+    const assignment = before.assignments.at(-1)!.id
+    h.engine.deleteTicket(ticketId)
+    expect(h.repo.tickets.get(ticketId)).toBeUndefined()
+    // Its running Assignment was stopped through the Executor, as any end does.
+    expect(h.executor.stop).toHaveBeenCalledWith(expect.objectContaining({ id: ticketId }), expect.objectContaining({ id: assignment }), 'ticketDeleted')
+    // Its Thread keeps no subscription, so nothing new reaches it.
+    expect(h.repo.threads.get('chat:t1')!.subscriptions).not.toContain(ticketId)
+    // The message it held is not handed back to Eval: deleting must not recreate the ticket.
+    h.engine.evaluateDue(); h.settle()
+    expect(h.requests.every(candidate => !candidate.triggers.some(item => item.id === '2'))).toBe(true)
+  })
+  it('deleting an unknown ticket is refused', () => {
+    expect(() => harness().engine.deleteTicket('missing')).toThrow(UserError)
+  })
   it('unsubscribing a thread stops fan-out until a new decision subscribes it', async () => {
     const h = harness()
     const decision = accepted(h)

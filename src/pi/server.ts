@@ -9,6 +9,7 @@ export interface PiServerHost {
   receive: (trigger: Trigger) => unknown
   stopTicket: (id: string) => unknown
   retryTicket: (id: string) => unknown
+  deleteTicket: (id: string) => unknown
   pause: (paused: boolean) => unknown
 }
 export interface PiServerOptions {
@@ -67,7 +68,7 @@ async function refresh() {
       const detail = document.createElement('pre');
       detail.textContent = JSON.stringify({id: ticket.id, attention: ticket.attention, waitsForPerson: ticket.waitsForPerson, report: ticket.report}, null, 2);
       row.append(title, detail);
-      for (const action of ['stop', 'retry']) {
+      for (const action of ['stop', 'retry', 'delete']) {
         const button = document.createElement('button');
         button.textContent = action;
         button.addEventListener('click', async () => {try {await api('/api/tickets/' + encodeURIComponent(ticket.id) + '/' + action, {}); await refresh();} catch (error) {element('error').textContent = error.message;}});
@@ -142,7 +143,7 @@ export async function startServer(host: PiServerHost, options: PiServerOptions):
         json(200, { ok: true })
         return
       }
-      const match = /^\/api\/tickets\/([^/]+)\/(stop|retry)$/.exec(url.pathname)
+      const match = /^\/api\/tickets\/([^/]+)\/(stop|retry|delete)$/.exec(url.pathname)
       if (request.method === 'POST' && match) {
         let id: string
         try { id = decodeURIComponent(match[1]!) } catch { throw new RequestError(400, '任务 ID 无效') }
@@ -150,7 +151,7 @@ export async function startServer(host: PiServerHost, options: PiServerOptions):
         if (!host.store.tickets.get(id)) throw new RequestError(404, '任务不存在')
         const value = await body(request)
         if (Object.keys(value).length) throw new RequestError(400, '请求体必须是空 JSON 对象')
-        await (match[2] === 'stop' ? host.stopTicket(id) : host.retryTicket(id))
+        await (match[2] === 'stop' ? host.stopTicket(id) : match[2] === 'delete' ? host.deleteTicket(id) : host.retryTicket(id))
         json(200, { ok: true })
         return
       }

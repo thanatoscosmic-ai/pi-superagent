@@ -162,6 +162,36 @@ export class Tickets extends EnginePart {
     return this.require(ticketId)
   }
   /**
+   * Delete a ticket for good, as a person asks when a request was mistaken or is no longer wanted: its running work ends, it
+   * lets go of its Threads and of the messages it owned, its record is removed, and the Executor forgets its Session.
+   *
+   * Unlike `end`, nothing it owned goes back to Eval: the point of deleting is that this work disappears, not that it comes
+   * back as a new ticket. Its worktree stays on disk for the person to inspect.
+   * @throws UserError when the ticket is unknown.
+   */
+  forget(ticketId: string): Ticket {
+    const ticket = this.require(ticketId)
+    const stopping = ticket.assignments.filter(assignment => assignment.state !== 'ended')
+    const at = this.now()
+    for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
+    // Its Threads stop delivering to it, and it keeps deciding nothing there.
+    for (const thread of this.repo.threads.list()) {
+      if (!thread.subscriptions.includes(ticketId)) continue
+      this.dropSubscriptions(thread.key, 'person', ticketId, 'ticketDeleted')
+    }
+    // The messages it owned are freed without being queued again: deleting must not recreate the ticket it removes.
+    for (const trigger of this.triggersOf(ticket)) {
+      const disposition = this.repo.triggers.disposition(trigger.id)
+      if (!disposition?.fanout.includes(ticketId)) continue
+      this.repo.triggers.saveDisposition(trigger.id, { ...disposition, fanout: disposition.fanout.filter(id => id !== ticketId) })
+    }
+    this.repo.tickets.remove?.(ticketId)
+    this.emit('ticket.deleted', { ticketId, title: ticket.title })
+    for (const assignment of stopping) this.options.executor.stop(ticket, assignment, 'ticketDeleted')
+    this.options.executor.discard?.(ticket)
+    return ticket
+  }
+  /**
    * Ends the stalled assignment of a retryable open ticket (`failed`, `blocked`, or failed input delivery) and starts a new one.
    * @throws UserError when the ticket is unknown or not retryable.
    */

@@ -66,6 +66,8 @@ export interface Executor {
   deliver(ticket: Ticket, assignment: Assignment): void
   /** End an assignment's work, such as cancelling its Session's turn; called after the ticket or assignment has already ended in the domain. */
   stop(ticket: Ticket, assignment: Assignment, reason: string): void
+  /** Forget everything kept for a ticket a person deleted, such as its worker's Session; its workspace is left for them to inspect. */
+  discard?(ticket: Ticket): void
 }
 
 /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
@@ -90,6 +92,8 @@ export interface DomainEvents {
   'ticket.created': { ticketId: string; decisionId: string; strength: Strength }
   'ticket.resumed': { ticketId: string; triggerId: string }
   'ticket.ended': { ticketId: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
+  /** A person deleted a ticket: its record is gone, and the views that named it no longer find one. */
+  'ticket.deleted': { ticketId: string; title: string }
   'assignment.started': { ticketId: string; assignmentId: string }
   'assignment.ended': { ticketId: string; assignmentId: string; reason: string }
   'thread.subscribed': { threadKey: string; ticketId: string }
@@ -125,6 +129,8 @@ export interface Repositories {
     open(): Ticket[]
     /** Tickets with undelivered Inputs or a pending or running Assignment, which is always the latest. */
     active(): Ticket[]
+    /** Remove a ticket's record for good, as a person deleting it asks. */
+    remove?(id: string): void
   }
   decisions: {
     get(id: string): Decision | undefined

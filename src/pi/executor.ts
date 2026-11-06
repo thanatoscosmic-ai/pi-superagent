@@ -43,6 +43,8 @@ type Worker = {
   paused?: boolean
   task?: Promise<void>
   unsubscribe: () => void
+  /** Its ticket was deleted: its turn may still be unwinding, but it must write nothing more for it. */
+  discarded?: boolean
 }
 
 export class PiExecutor implements Executor {
@@ -78,6 +80,22 @@ export class PiExecutor implements Executor {
     this.host.store.afterCommit(() => {
       const worker = this.workers.get(ticket.id)
       if (worker?.assignmentId === assignment.id) worker.agent.abort()
+    })
+  }
+
+  /** Forget a deleted ticket's worker, so a new ticket that reuses its id starts clean rather than resuming its history. */
+  discard(ticket: Ticket): void {
+    this.host.store.afterCommit(() => {
+      const worker = this.workers.get(ticket.id)
+      const erase = () => { this.host.store.db.prepare('DELETE FROM pi_session WHERE ticket_id = ?').run(ticket.id) }
+      if (!worker) { erase(); return }
+      // Its turn is still unwinding: mark it so the flush that follows writes nothing, then erase the session once it ends.
+      worker.discarded = true
+      worker.agent.abort()
+      this.workers.delete(ticket.id)
+      try { worker.unsubscribe() } catch {}
+      erase()
+      void worker.task?.finally(erase)
     })
   }
 
@@ -320,6 +338,8 @@ export class PiExecutor implements Executor {
   }
 
   private flush(worker: Worker): void {
+    // A deleted ticket's worker may still be unwinding; its record is gone and must not come back.
+    if (worker.discarded) return
     worker.session.messages = worker.agent.state.messages.map(message => message.role === 'assistant' && (message.errorMessage || message.stopReason === 'error')
       ? { ...message, ...(message.errorMessage ? { errorMessage: this.errorText(message.errorMessage) } : {}), content: message.stopReason === 'error'
         ? message.content.map(content => content.type === 'text' ? { ...content, text: this.errorText(content.text) } : content) : message.content }
@@ -454,7 +474,7 @@ export class PiExecutor implements Executor {
         interrupted ||= !!worker.paused || this.host.paused()
         if (interrupted) worker.error = undefined
         this.flush(worker)
-        if (!this.closing && !interrupted && this.current(worker.ticketId, assignmentId)) {
+        if (!this.closing && !worker.discarded && !interrupted && this.current(worker.ticketId, assignmentId)) {
           if (worker.error) this.report(worker.ticketId, { state: 'failed', summary: this.errorText(worker.error) })
           else if (!worker.reported || latestAssignment(this.current(worker.ticketId, assignmentId)!)?.report?.state === 'progress') this.report(worker.ticketId, { state: 'waiting', summary: '执行轮次已结束，但代理未报告结果；等待后续输入。' })
           this.host.engine().turnEnded(worker.ticketId, assignmentId)

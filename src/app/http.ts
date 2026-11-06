@@ -192,6 +192,13 @@ function routes(runtime: HttpHost): Routes {
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'POST tickets/:id/delete': ({ params }) => {
+      const id = ticket(params.id)
+      // Ending first stops its turn through the ordinary path, so its record is never removed under a running worker.
+      if (!runtime.store.tickets.get(id)?.ended) runtime.engine.stopTicket(id, 'deleted')
+      runtime.engine.deleteTicket(id)
+      return { deleted: true }
+    },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)

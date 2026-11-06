@@ -140,7 +140,9 @@ async function main(): Promise<void> {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('无效端口')
     runtime.start()
     server = await startServer({ store: runtime.store, health: () => runtime.health(), receive: trigger => runtime.receive(trigger),
-      stopTicket: id => runtime.engine.stopTicket(id), retryTicket: id => runtime.engine.retryTicket(id), pause: paused => runtime.pause(paused) },
+      stopTicket: id => runtime.engine.stopTicket(id), retryTicket: id => runtime.engine.retryTicket(id),
+      deleteTicket: id => { if (!runtime.store.tickets.get(id)?.ended) runtime.engine.stopTicket(id, 'deleted'); return runtime.engine.deleteTicket(id) },
+      pause: paused => runtime.pause(paused) },
     { port, token: process.env.PI_SUPERAGENT_TOKEN, ...(feishu ? { feishuEvent: (body: unknown) => feishu!.handleEvent(body) } : {}) })
     const address = server.address()
     const actualPort = address && typeof address !== 'string' ? address.port : port
